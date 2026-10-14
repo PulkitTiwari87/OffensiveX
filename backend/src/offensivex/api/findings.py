@@ -42,7 +42,9 @@ detail_router = APIRouter(prefix="/findings", tags=["findings"])
 
 class FindingResponse(BaseModel):
     id: UUID
+    assessment_id: UUID
     asset_id: UUID
+    asset_identifier: str
     title: str
     severity: models.FindingSeverity
     confidence: float
@@ -59,6 +61,7 @@ class FindingResponse(BaseModel):
 class EvidenceResponse(BaseModel):
     id: UUID
     kind: models.EvidenceKind
+    tool_execution_id: UUID
     excerpt: str
     captured_at: datetime
 
@@ -66,6 +69,7 @@ class EvidenceResponse(BaseModel):
 
 
 class FindingDetailResponse(FindingResponse):
+    description: str | None = None
     risk_breakdown: dict | None = None
     evidence: list[EvidenceResponse] = []
 
@@ -77,6 +81,19 @@ def list_findings(
     status: Annotated[models.FindingStatus | None, Query()] = None,
 ) -> list[models.Finding]:
     return findings_service.list_findings(session, assessment_id=assessment_id, status=status)
+
+
+@detail_router.get("", response_model=list[FindingResponse], dependencies=[_read])
+def search_findings(
+    session: Annotated[Session, Depends(get_db_session)],
+    assessment_id: Annotated[UUID | None, Query()] = None,
+    status: Annotated[models.FindingStatus | None, Query()] = None,
+    severity: Annotated[models.FindingSeverity | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+) -> list[models.Finding]:
+    return findings_service.search_findings(
+        session, assessment_id=assessment_id, status=status, severity=severity, limit=limit
+    )
 
 
 @detail_router.get("/{finding_id}", response_model=FindingDetailResponse, dependencies=[_read])

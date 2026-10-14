@@ -64,6 +64,17 @@ A full consistency review converted the documentation into an implementation-rea
 - "Source Analysis" (raised as a possible separate agent) stays a **capability inside the Vulnerability Agent's toolset** (Semgrep/static analysis) — not promoted to an eighth agent; no distinct responsibility justifies the split yet.
 - First vertical slice recommendation: a non-intrusive web header/reflection-class finding (not an exploit-grade class), specifically because it validates non-destructively and exercises every lifecycle stage once.
 
+## Network safety (ADR-024, before P15)
+
+Scope is now checked on **host and port**, and connecting adapters validate **every resolved address** and connect to an approved IP literal. Decisions worth remembering: a host-only include rule means ports 80/443 only (never "all ports"); a host-only exclude rule means every port; cloud-metadata addresses are never contacted even with `OFFENSIVEX_ALLOW_PRIVATE_TARGETS` (stricter than the original Guardrail 2.7 text); a mixed public/private DNS answer rejects the whole resolution; a public-looking name that resolves privately needs an explicit `cidr` include rule even in a lab; redirects are reported, never followed; existing authorizations were narrowed (not widened) by migration `0006` and must be re-issued as a new version to cover other ports. Details and limits: `security/network-safety.md`.
+
+## Dashboard and CLI (ADR-025, P15/P16)
+
+- `frontend/` (React + TS + Vite) is built with `npm run build` and served by the backend at `/dashboard`; `offensivex` (`backend/src/offensivex/cli.py`) is a thin HTTP client. Both use the same API, cookie session and CSRF token; `POST /assessments/{id}/run` starts the pipeline in the API process.
+- **Run backend tests only against a separate database.** The migration tests drop the schema; set `OFFENSIVEX_TEST_DATABASE_URL` (in `backend/.env`; `tests/conftest.py` applies it to the whole test process). Using the dev DB twice erased the dashboard's accounts and data.
+- Gemini: `gemini-2.5-flash` returns 404 for chat on the owner's key although `/models` lists it; `gemini-3.1-flash-lite` works (verified 2026-10-14).
+- Dev-DB lab accounts `mvp-admin/analyst/viewer` were created for verification; their passwords live only in a session scratch file. Change or remove them.
+
 ## Unresolved questions for the project owner
 
 - Which LLM provider/model to run first for real verification (both an Anthropic and an OpenAI-compatible provider are implemented; neither is verified).

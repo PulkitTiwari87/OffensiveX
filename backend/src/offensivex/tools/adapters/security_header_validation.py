@@ -20,6 +20,7 @@ not gated the same way validation is (docs/security/validation.md).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from offensivex.tools.adapters.security_header_scan import SecurityHeaderScanAdapter
@@ -51,11 +52,14 @@ class SecurityHeaderValidationCheck:
     def plan(self, request: dict[str, Any]) -> ExecutionPlan:
         scan_plan = self._scanner.plan({"url": request["url"]})
         return ExecutionPlan(
-            capability=self.meta.capability, destinations=scan_plan.destinations, request=request
+            capability=self.meta.capability,
+            destinations=scan_plan.destinations,
+            request=request,
+            ports=scan_plan.ports,
         )
 
     def run(self, plan: ExecutionPlan) -> bytes:
-        scan_plan = self._scanner.plan({"url": plan.request["url"]})
+        scan_plan = replace(self._scanner.plan({"url": plan.request["url"]}), network=plan.network)
         return self._scanner.run(scan_plan)
 
     def parse(self, raw_artifact: bytes) -> ParsedResult:

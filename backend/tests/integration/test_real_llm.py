@@ -73,7 +73,7 @@ def test_real_model_follows_the_agent_step_contract(provider: LLMProvider) -> No
         task_context={
             "target": "lab",  # deliberately no hint of the port in the name
             "entry_point": "http://lab.example:8443/",
-            "in_scope": [{"type": "domain", "pattern": "lab.example"}],
+            "in_scope": [{"type": "domain", "pattern": "lab.example", "ports": "8443"}],
             "excluded": [],
         },
     )

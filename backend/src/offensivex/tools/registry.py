@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 
 from offensivex.core.errors import OffensiveXError
 from offensivex.db import models
+from offensivex.tools.network_guard import NetworkContext, NetworkPolicyError
 from offensivex.tools.scope_guard import ScopeRuleLike, check_destinations
 
 
@@ -121,11 +122,27 @@ class AdapterMeta:
 @dataclass(frozen=True)
 class ExecutionPlan:
     """Declares every destination an adapter will touch, built *before*
-    anything runs, so the Scope Guard can check all of them up front."""
+    anything runs, so the Scope Guard can check all of them up front.
+
+    `ports`, when given, is parallel to `destinations` and is the TCP port the
+    adapter will connect to for that host; an adapter that opens a connection
+    MUST declare it, because the Scope Guard then checks host *and* port. `None`
+    (the default) means the capability never connects to the destination (DNS
+    resolution), so only the host is checked.
+
+    `network` is filled in by `ToolRegistry.execute()` after the Scope Guard
+    passes; adapters never build it. An adapter that connects refuses to run
+    without it."""
 
     capability: str
     destinations: list[str]
     request: dict[str, Any] = field(default_factory=dict)
+    ports: list[int | None] | None = None
+    network: NetworkContext | None = None
+
+    def __post_init__(self) -> None:
+        if self.ports is not None and len(self.ports) != len(self.destinations):
+            raise ValueError("ExecutionPlan.ports must be parallel to destinations.")
 
 
 @dataclass(frozen=True)
@@ -161,8 +178,12 @@ class ToolAdapter(Protocol):
 
 
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(self, *, allow_private_targets: bool = False) -> None:
+        """`allow_private_targets` mirrors `OFFENSIVEX_ALLOW_PRIVATE_TARGETS`
+        (Guardrail.md section 2.7). Default-deny: a registry built without it
+        refuses to connect to loopback/private/link-local destinations."""
         self._adapters: dict[str, ToolAdapter] = {}
+        self._allow_private_targets = allow_private_targets
 
     def register(self, adapter: ToolAdapter) -> None:
         self._adapters[adapter.meta.capability] = adapter
@@ -204,7 +225,7 @@ class ToolRegistry:
 
         plan = adapter.plan(request)
         scope_rules: list[ScopeRuleLike] = list(assessment.authorization.scope_rules)
-        checks = check_destinations(plan.destinations, scope_rules)
+        checks = check_destinations(plan.destinations, scope_rules, plan.ports)
         denied = [c for c in checks if not c.allowed]
 
         tool_execution = models.ToolExecution(
@@ -217,7 +238,11 @@ class ToolRegistry:
             status=(
                 models.ToolExecutionStatus.DENIED if denied else models.ToolExecutionStatus.PLANNED
             ),
-            argv={"destinations": plan.destinations, "request": plan.request},
+            argv={
+                "destinations": plan.destinations,
+                "ports": plan.ports,
+                "request": plan.request,
+            },
         )
         session.add(tool_execution)
         session.flush()
@@ -229,8 +254,22 @@ class ToolRegistry:
         tool_execution.started_at = datetime.now(UTC)
         session.flush()
 
+        plan = replace(
+            plan,
+            network=NetworkContext(
+                rules=tuple(scope_rules), allow_private_targets=self._allow_private_targets
+            ),
+        )
         try:
             raw_artifact = adapter.run(plan)
+        except NetworkPolicyError as exc:
+            # Connection-time enforcement (resolved address / pinned peer): a
+            # scope refusal, recorded as DENIED rather than as a tool failure.
+            tool_execution.scope_decision = models.ScopeDecision.DENIED
+            tool_execution.status = models.ToolExecutionStatus.DENIED
+            tool_execution.finished_at = datetime.now(UTC)
+            session.flush()
+            raise ScopeViolationError(str(exc)) from exc
         except Exception as exc:
             tool_execution.status = models.ToolExecutionStatus.KILLED
             tool_execution.finished_at = datetime.now(UTC)

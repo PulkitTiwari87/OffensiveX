@@ -30,11 +30,19 @@ self-escalation → **403**. Too many failed logins → **429**.
 | GET | `/api/v1/auth/me` | any authenticated | |
 | POST | `/api/v1/targets` | `targets:write` | register a target. Optional `entry_point`: an http(s) URL where assessment starts (see below). **422** `Invalid entry point` if malformed/ambiguous or (unless `OFFENSIVEX_ALLOW_PRIVATE_TARGETS=true`) loopback/private |
 | GET | `/api/v1/targets/{id}` | `data:read` | includes the normalized `entry_point` (null for legacy targets) |
-| POST | `/api/v1/targets/{id}/authorizations` | `targets:write` | submit scope + attestation (records the submitter) |
+| POST | `/api/v1/targets/{id}/authorizations` | `targets:write` | submit scope + attestation (records the submitter). Each `scope_rules[]` item is `{rule_type, pattern, is_exclusion?, ports?}`; `ports` is e.g. `"80,443,8000-8100"` (omitted: an include rule covers 80/443 only, an exclude rule covers every port — [security/network-safety.md](../security/network-safety.md)). **422** `Invalid scope rule` for a malformed/catch-all `ports`, and `Entry point outside authorized scope` if the target's entry-point host *or port* is not covered |
 | POST | `/api/v1/targets/{id}/authorizations/{v}/approve` | `authorizations:decide` | admin only; **403** if you submitted it, unless `OFFENSIVEX_ALLOW_SELF_APPROVAL=true` |
 | POST | `/api/v1/targets/{id}/authorizations/{v}/reject` | `authorizations:decide` | a rejected version can never be approved |
 | POST | `/api/v1/assessments` | `assessments:write` | requires an approved, unexpired authorization; schedules Recon |
-| GET | `/api/v1/assessments/{id}` | `data:read` | |
+| GET | `/api/v1/targets` | `data:read` | all targets |
+| GET | `/api/v1/targets/{id}/authorizations` | `data:read` | every version with `status`, `attestation`, `scope_rules[{rule_type, pattern, is_exclusion, ports}]` |
+| GET | `/api/v1/assessments` | `data:read` | `?status=&target_id=&limit(≤200)=`; newest first, each with `target_name`, `finding_count` |
+| POST | `/api/v1/assessments/{id}/run` | `assessments:write` | **202**. Starts the agent pipeline in the background of the server process. **503** if no LLM is configured (nothing changes); **409** if the assessment is not newly created/running, has already started, or is already running in this process. Audited as `pipeline.run`. Scope and authorization were enforced at creation and are enforced again by the Scope Guard on every tool call |
+| GET | `/api/v1/assessments/{id}` | `data:read` | includes `agent_runs[]` with `status`, `error` (why a stage failed), timestamps |
+| GET | `/api/v1/assessments/{id}/reports` | `data:read` | reports of one assessment, newest first |
+| GET | `/api/v1/findings` | `data:read` | `?assessment_id=&status=&severity=&limit(≤500)=`; newest first |
+| GET | `/api/v1/overview` | `data:read` | counts by assessment status / finding severity / finding status, recent assessments |
+| GET | `/api/v1/system/status` | `data:read` | environment, LLM `{enabled, provider, model}`, `allow_private_targets`, `allow_self_approval`, `session_ttl_minutes`. Never the API key, base URL or secret key |
 | POST | `/api/v1/assessments/{id}/cancel` | `assessments:write` | |
 | GET | `/api/v1/assessments/{id}/assets` | `data:read` | |
 | GET | `/api/v1/assessments/{id}/findings` | `data:read` | `?status=` filter |

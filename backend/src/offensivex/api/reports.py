@@ -74,6 +74,18 @@ def generate_report(
     return report
 
 
+@router.get(
+    "",
+    response_model=list[ReportResponse],
+    dependencies=[Depends(require_permission(Permission.DATA_READ))],
+)
+def list_reports(
+    assessment_id: UUID,
+    session: Annotated[Session, Depends(get_db_session)],
+) -> list[models.Report]:
+    return reports_service.list_reports(session, assessment_id=assessment_id)
+
+
 @detail_router.get(
     "/{report_id}",
     response_model=ReportResponse,

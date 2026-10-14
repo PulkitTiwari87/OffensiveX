@@ -38,7 +38,9 @@ Python (backend, agent runtime), PostgreSQL (all persistent state), React + Type
 | Backend, Phases 0–14 | IMPLEMENTED and verified against real PostgreSQL — domain model, Tool Registry, agents, findings lifecycle, attack graph, risk engine, reports |
 | Authentication, RBAC, audit log | IMPLEMENTED and verified — [docs/security/access-control.md](docs/security/access-control.md) |
 | LLM integration (Anthropic, OpenAI-compatible) | IMPLEMENTED, **not yet verified against a real model** — [docs/architecture/llm-integration.md](docs/architecture/llm-integration.md) |
-| Dashboard, CLI, Cloud Security | NOT STARTED |
+| CLI (`offensivex`, P16) | IMPLEMENTED and verified against a real backend — [docs/interfaces/cli.md](docs/interfaces/cli.md) |
+| Dashboard (React + TypeScript + Vite, P15) | IMPLEMENTED and verified in a browser against a real backend — [docs/interfaces/dashboard.md](docs/interfaces/dashboard.md) |
+| Cloud Security | NOT STARTED |
 
 See [docs/roadmap/current-status.md](docs/roadmap/current-status.md) for the full table and known gaps.
 
@@ -79,6 +81,40 @@ own environment (never commit them; see [.env.example](.env.example)). Then:
 pytest -m real_llm tests/integration/test_real_llm.py     # opt-in; costs money
 python -m offensivex.admin run-assessment --assessment-id <uuid> --report
 ```
+
+### MVP walkthrough (local lab, CLI and dashboard)
+
+Everything below runs on your machine against a lab target **you own**. Never point it at a third party.
+
+```bash
+# 1. Database and backend
+docker compose up -d postgres                       # repo root
+cd backend && pip install -e ".[dev]" && alembic upgrade head
+# 2. Dashboard build (served by the backend at /dashboard)
+cd ../frontend && npm ci && npm run build && cd ../backend
+# 3. Optional LLM (agents cannot run without it) - put these in backend/.env, never commit them:
+#    OFFENSIVEX_LLM_ENABLED=true  OFFENSIVEX_LLM_PROVIDER=openai
+#    OFFENSIVEX_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+#    OFFENSIVEX_LLM_MODEL=gemini-3.1-flash-lite   OFFENSIVEX_LLM_API_KEY=...
+# 4. Start (private targets must be allowed explicitly to scan localhost)
+OFFENSIVEX_ALLOW_PRIVATE_TARGETS=true uvicorn offensivex.main:app --host 127.0.0.1 --port 8000
+
+# 5. First administrator, then an analyst (passwords are prompted, never arguments)
+offensivex admin create-user --username admin1 --role admin
+offensivex admin create-user --username analyst1 --role analyst
+
+# 6. Analyst: target + scope (host AND port); admin approves; analyst runs it
+offensivex login --username analyst1
+offensivex target create --name lab --type web_application --entry-point http://localhost:8099/
+offensivex authorization submit lab --include domain:localhost@8099 --attestation "My own lab" --valid-days 1
+offensivex login --username admin1 && offensivex authorization approve lab 1   # a different person than the submitter
+offensivex login --username analyst1
+offensivex assessment create lab && offensivex assessment run <id> --wait
+offensivex finding list --assessment <id> && offensivex finding show <finding-id>
+offensivex report generate <id> --format both -o report.md
+```
+
+Open <http://127.0.0.1:8000/dashboard/> and sign in with the same accounts: the dashboard and CLI read the same database. Port scope matters: an include rule without `@PORTS` covers only 80/443. Set `OFFENSIVEX_TEST_DATABASE_URL` to a separate database before running `pytest`, otherwise tests write into the same database the dashboard shows.
 
 ## Documentation
 

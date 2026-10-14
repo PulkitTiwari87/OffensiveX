@@ -30,6 +30,10 @@ from tests.integration.auth_support import authenticated_client
 
 pytestmark = pytest.mark.integration
 
+# Explicit lab opt-in (ADR-024): a host-only rule covers ports 80/443 only, and these
+# tests start local servers on ephemeral ports.
+LAB_PORTS = "1024-65535"
+
 
 class _QuietHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - stdlib-mandated name
@@ -99,7 +103,7 @@ def test_recon_agent_discovers_host_and_endpoint_through_real_tools(
     authorization = targets_service.submit_authorization(
         session,
         target_id=target.id,
-        scope_rules=[ScopeRuleInput(rule_type="domain", pattern="localhost")],
+        scope_rules=[ScopeRuleInput(rule_type="domain", pattern="localhost", ports=LAB_PORTS)],
         attestation="attestation",
         valid_from=now,
         valid_until=now + timedelta(days=1),
@@ -124,7 +128,7 @@ def test_recon_agent_discovers_host_and_endpoint_through_real_tools(
     session.add(agent_run)
     session.flush()
 
-    registry = ToolRegistry()
+    registry = ToolRegistry(allow_private_targets=True)
     registry.register(DnsResolutionAdapter())
     registry.register(HttpProbeAdapter())
 
@@ -227,7 +231,7 @@ def test_recon_agent_cannot_probe_a_host_outside_scope(session: Session) -> None
     session.add(agent_run)
     session.flush()
 
-    registry = ToolRegistry()
+    registry = ToolRegistry(allow_private_targets=True)
     registry.register(DnsResolutionAdapter())
     registry.register(HttpProbeAdapter())
 

@@ -10,7 +10,9 @@ first decision) is the Phase 2 orchestrator skeleton.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from offensivex.core.errors import NotFoundError, OffensiveXError
@@ -75,6 +77,46 @@ def get_assessment(session: Session, assessment_id: object) -> models.Assessment
     if assessment is None:
         raise NotFoundError(f"Assessment {assessment_id!r} does not exist.")
     return assessment
+
+
+def list_assessments(
+    session: Session,
+    *,
+    status: models.AssessmentStatus | None = None,
+    target_id: object | None = None,
+    limit: int = 50,
+) -> list[tuple[models.Assessment, int]]:
+    """Newest first, each with its finding count."""
+    finding_count = (
+        select(func.count(models.Finding.id))
+        .where(models.Finding.assessment_id == models.Assessment.id)
+        .correlate(models.Assessment)
+        .scalar_subquery()
+    )
+    query = select(models.Assessment, finding_count).order_by(models.Assessment.created_at.desc())
+    if status is not None:
+        query = query.where(models.Assessment.status == status)
+    if target_id is not None:
+        query = query.where(models.Assessment.target_id == target_id)
+    rows: Any = session.execute(query.limit(limit)).all()
+    return [(a, int(n)) for a, n in rows]
+
+
+class AssessmentNotRunnableError(OffensiveXError):
+    status_code = 409
+    title = "Assessment cannot be started"
+
+
+def assert_runnable(assessment: models.Assessment) -> None:
+    """A run may start once: the assessment must be RUNNING (created, not
+    cancelled/finished) and have no agent run beyond its initial QUEUED one."""
+    if assessment.status is not models.AssessmentStatus.RUNNING:
+        raise AssessmentNotRunnableError(
+            f"Assessment is {assessment.status.value!r}; only a newly created (running) "
+            "assessment can be started."
+        )
+    if any(r.status is not models.AgentRunStatus.QUEUED for r in assessment.agent_runs):
+        raise AssessmentNotRunnableError("This assessment has already been started.")
 
 
 def cancel_assessment(session: Session, *, assessment_id: object) -> models.Assessment:

@@ -30,6 +30,10 @@ from tests.integration.auth_support import authenticated_client
 
 pytestmark = pytest.mark.integration
 
+# Explicit lab opt-in (ADR-024): a host-only rule covers ports 80/443 only, and these
+# tests start local servers on ephemeral ports.
+LAB_PORTS = "1024-65535"
+
 
 class _NoHeadersHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
@@ -85,7 +89,7 @@ def _make_investigating_finding(session: Session, url: str, *, validation_enable
     authorization = targets_service.submit_authorization(
         session,
         target_id=target.id,
-        scope_rules=[ScopeRuleInput(rule_type="domain", pattern="localhost")],
+        scope_rules=[ScopeRuleInput(rule_type="domain", pattern="localhost", ports=LAB_PORTS)],
         attestation="attestation",
         valid_from=now,
         valid_until=now + timedelta(days=1),
@@ -141,7 +145,7 @@ def test_validation_agent_refuses_to_run_when_not_opted_in(session: Session) -> 
         session, "http://localhost:1/", validation_enabled=False
     )
     agent_run = _agent_run(session, assessment)
-    registry = ToolRegistry()
+    registry = ToolRegistry(allow_private_targets=True)
     registry.register(SecurityHeaderValidationCheck())
 
     with pytest.raises(ValidationNotEnabledError):
@@ -165,7 +169,7 @@ def test_tool_registry_independently_refuses_the_capability_without_opt_in(
     assessment, _finding = _make_investigating_finding(
         session, "http://localhost:1/", validation_enabled=False
     )
-    registry = ToolRegistry()
+    registry = ToolRegistry(allow_private_targets=True)
     registry.register(SecurityHeaderValidationCheck())
 
     with pytest.raises(ValidationModeRequiredError):
@@ -185,7 +189,7 @@ def test_validation_agent_confirms_finding(session: Session) -> None:
         url = f"http://localhost:{port}/"
         assessment, finding = _make_investigating_finding(session, url, validation_enabled=True)
         agent_run = _agent_run(session, assessment)
-        registry = ToolRegistry()
+        registry = ToolRegistry(allow_private_targets=True)
         registry.register(SecurityHeaderValidationCheck())
         llm = _ScriptedLLMProvider(
             [
@@ -248,7 +252,7 @@ def test_validation_agent_rejects_finding_when_condition_no_longer_holds(
         url = f"http://localhost:{port}/"
         assessment, finding = _make_investigating_finding(session, url, validation_enabled=True)
         agent_run = _agent_run(session, assessment)
-        registry = ToolRegistry()
+        registry = ToolRegistry(allow_private_targets=True)
         registry.register(SecurityHeaderValidationCheck())
         llm = _ScriptedLLMProvider(
             [
@@ -286,7 +290,7 @@ def test_validation_agent_unresolved_leaves_status_unchanged(session: Session) -
         url = f"http://localhost:{port}/"
         assessment, finding = _make_investigating_finding(session, url, validation_enabled=True)
         agent_run = _agent_run(session, assessment)
-        registry = ToolRegistry()
+        registry = ToolRegistry(allow_private_targets=True)
         registry.register(SecurityHeaderValidationCheck())
         llm = _ScriptedLLMProvider(
             [
@@ -340,7 +344,7 @@ def test_analyst_override_rejects_invalid_transition(session: Session) -> None:
     authorization = targets_service.submit_authorization(
         session,
         target_id=target.id,
-        scope_rules=[ScopeRuleInput(rule_type="domain", pattern="localhost")],
+        scope_rules=[ScopeRuleInput(rule_type="domain", pattern="localhost", ports=LAB_PORTS)],
         attestation="attestation",
         valid_from=now,
         valid_until=now + timedelta(days=1),

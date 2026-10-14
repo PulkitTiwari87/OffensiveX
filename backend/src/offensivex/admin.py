@@ -124,7 +124,12 @@ def _run_assessment(
             details={"provider": provider.name, "model": getattr(provider, "model", None)},
         )
         session.commit()  # the intent is on record even if the run fails midway
-        outcome = pipeline.run_assessment(session, assessment=assessment, llm_provider=provider)
+        outcome = pipeline.run_assessment(
+            session,
+            assessment=assessment,
+            llm_provider=provider,
+            allow_private_targets=settings.allow_private_targets,
+        )
         for stage in outcome.stages:
             mark = "ok  " if stage.succeeded else "FAIL"
             suffix = f" ({stage.error})" if stage.error else ""

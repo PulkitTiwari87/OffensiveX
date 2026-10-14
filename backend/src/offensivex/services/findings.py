@@ -37,6 +37,25 @@ def list_findings(
     return list(session.scalars(query.order_by(models.Finding.first_seen)))
 
 
+def search_findings(
+    session: Session,
+    *,
+    assessment_id: UUID | None = None,
+    status: models.FindingStatus | None = None,
+    severity: models.FindingSeverity | None = None,
+    limit: int = 200,
+) -> list[models.Finding]:
+    """Findings across assessments, newest first; every filter is optional."""
+    query = select(models.Finding)
+    if assessment_id is not None:
+        query = query.where(models.Finding.assessment_id == assessment_id)
+    if status is not None:
+        query = query.where(models.Finding.status == status)
+    if severity is not None:
+        query = query.where(models.Finding.severity == severity)
+    return list(session.scalars(query.order_by(models.Finding.first_seen.desc()).limit(limit)))
+
+
 def get_finding(session: Session, finding_id: UUID) -> models.Finding:
     finding = session.get(models.Finding, finding_id)
     if finding is None:

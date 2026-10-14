@@ -128,7 +128,12 @@ def build_report_data(session: Session, assessment: models.Assessment) -> dict[s
             "target_name": target.name,
             "entry_point": target.entry_point,
             "scope_rules": [
-                {"rule_type": r.rule_type, "pattern": r.pattern, "is_exclusion": r.is_exclusion}
+                {
+                    "rule_type": r.rule_type,
+                    "pattern": r.pattern,
+                    "is_exclusion": r.is_exclusion,
+                    "ports": r.ports,
+                }
                 for r in scope_rules
             ],
         },
@@ -306,7 +311,11 @@ def render_markdown(report_data: dict[str, Any]) -> str:
     lines.append("")
     for rule in report_data["scope"]["scope_rules"]:
         prefix = "exclude" if rule["is_exclusion"] else "include"
-        lines.append(f"- {prefix}: `{_escape_markdown(rule['pattern'])}` ({rule['rule_type']})")
+        ports = rule.get("ports") or ("all ports" if rule["is_exclusion"] else "80, 443 (default)")
+        lines.append(
+            f"- {prefix}: `{_escape_markdown(rule['pattern'])}` ({rule['rule_type']}), "
+            f"ports: {_escape_markdown(ports)}"
+        )
     lines.append("")
 
     lines.append("## Attack Surface")

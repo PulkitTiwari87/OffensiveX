@@ -32,6 +32,10 @@ from tests.integration.auth_support import authenticated_client
 
 pytestmark = pytest.mark.integration
 
+# Explicit lab opt-in (ADR-024): a host-only rule covers ports 80/443 only, and these
+# tests start local servers on ephemeral ports.
+LAB_PORTS = "1024-65535"
+
 
 class _NoHeadersHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
@@ -87,7 +91,7 @@ def _make_assessment_and_discovered_finding(session: Session, url: str) -> tuple
     authorization = targets_service.submit_authorization(
         session,
         target_id=target.id,
-        scope_rules=[ScopeRuleInput(rule_type="domain", pattern="localhost")],
+        scope_rules=[ScopeRuleInput(rule_type="domain", pattern="localhost", ports=LAB_PORTS)],
         attestation="attestation",
         valid_from=now,
         valid_until=now + timedelta(days=1),
@@ -141,7 +145,7 @@ def test_investigation_confirms_condition_still_present(session: Session) -> Non
         session.add(agent_run)
         session.flush()
 
-        registry = ToolRegistry()
+        registry = ToolRegistry(allow_private_targets=True)
         registry.register(SecurityHeaderScanAdapter())
         llm = _ScriptedLLMProvider(
             [
@@ -216,7 +220,7 @@ def test_investigation_returns_finding_to_suspected_when_no_longer_reproducible(
         session.add(agent_run)
         session.flush()
 
-        registry = ToolRegistry()
+        registry = ToolRegistry(allow_private_targets=True)
         registry.register(SecurityHeaderScanAdapter())
         llm = _ScriptedLLMProvider(
             [

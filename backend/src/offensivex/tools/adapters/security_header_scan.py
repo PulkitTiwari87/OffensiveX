@@ -18,6 +18,7 @@ specific check class. No new dependency.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from offensivex.tools.adapters.http_probe import HttpProbeAdapter
@@ -61,10 +62,13 @@ class SecurityHeaderScanAdapter:
             capability=self.meta.capability,
             destinations=probe_plan.destinations,
             request=request,
+            ports=probe_plan.ports,
         )
 
     def run(self, plan: ExecutionPlan) -> bytes:
-        probe_plan = self._http_probe.plan(plan.request)
+        # Re-planned from the request, but under the same network policy context
+        # the Tool Registry attached to *this* plan.
+        probe_plan = replace(self._http_probe.plan(plan.request), network=plan.network)
         return self._http_probe.run(probe_plan)
 
     def parse(self, raw_artifact: bytes) -> ParsedResult:

@@ -641,3 +641,60 @@ Config validation fails at startup if the LLM is enabled but incomplete. Tests n
 
 ## Status
 ACCEPTED
+
+# ADR-024
+
+## Decision
+Two enforcement gaps in the Scope Guard are closed. **(1) Port scope:** scope rules gain an optional `ports` list; an include rule without it authorizes the web default ports (80, 443) only, an exclude rule without it excludes every port; the Scope Guard checks host *and* port for every connecting capability. **(2) Connection-time address policy:** a connecting adapter resolves a hostname once, validates every resolved address (`tools/network_guard.py`), connects to an approved IP literal, verifies the peer, and verifies TLS against the original hostname. Cloud-metadata addresses are never contacted; loopback/private/link-local/reserved/multicast/CGNAT addresses need `OFFENSIVEX_ALLOW_PRIVATE_TARGETS` **and** explicit scope coverage of the address. Redirects are reported, not followed. Full rules: [security/network-safety.md](security/network-safety.md).
+
+## Context
+The Scope Guard matched hostnames only. A rule `localhost` or `app.example.com` therefore authorized every port, and a public name that resolved (or was rebound) to `127.0.0.1`, `10.x` or `169.254.169.254` was not stopped at runtime: the probe pinned the IP it resolved but never checked it against anything. Guardrail §2.7/§2.8 promised both protections; only the IP-literal and creation-time halves existed. The project owner asked for both to be closed before the dashboard (P15).
+
+## Alternatives
+- Keep a host rule meaning "all ports" and add `ports` only as an optional narrowing: rejected — an authorization for a hostname would still silently cover SSH, databases and admin ports, which is the gap being closed.
+- Backfill existing rules with `ports = '1-65535'` in the migration to preserve old behaviour: rejected — it would carry the unsafe breadth forward as data and the catch-all is rejected for new rules.
+- Backfill existing targets' entry-point ports into their rules: rejected — a migration must not grant access the authorization never named; a new authorization version is the audited way to widen.
+- Do a DNS lookup for validation and let an HTTP library connect by name: rejected — that is the check/use gap rebinding exploits; the standard-library `socket`/`ssl` probe already owns the connection, so pinning is exact.
+- Follow redirects with per-hop checks: deferred — nothing needs it, and not following is the strictly safer behaviour.
+- Reject only the *private* answers of a mixed DNS response and connect to the public ones: rejected — a mixed answer is itself the signature of a rebinding attempt; the whole resolution is refused.
+
+## Reasoning
+Port and address are authorization dimensions just as the hostname is, so they belong to the same default-deny, exclude-wins decision and are enforced where every tool passes (the registry, plus the adapter that opens the socket) rather than in an agent. Treating "no `ports`" as the web defaults for includes and as "all ports" for excludes makes every ambiguous legacy rule fail closed in both directions. Metadata addresses are the one class never permitted even with the deployment switch and an explicit rule: no legitimate assessment target is an instance-metadata service, and a rule naming one is far more likely a mistake or an attack. This is stricter than the literal Guardrail §2.7 text (which allowed it with both opt-ins); it strengthens, not weakens, the guardrail.
+
+## Trade-offs
+Existing authorizations now cover fewer ports: a target on a non-default port needs a new authorization version before its next assessment (fail-closed, documented, reversible). A lab that maps a public-looking name to a private address needs an explicit `cidr` include rule for it. `dns_resolution` still reports private answers as data. The probe still runs in-process, so there is no network-namespace egress filter underneath; and resolver honesty is out of scope.
+
+## Consequences
+Migration `0006_scope_rule_ports` (additive). `ExecutionPlan` gains `ports` and `network`; `ToolRegistry` takes `allow_private_targets`; a policy refusal at connect time is recorded `DENIED` and raised as `ScopeViolationError`. Existing local-lab tests now state their opt-ins explicitly (`ToolRegistry(allow_private_targets=True)` and a `ports` list). See [roadmap/current-status.md](roadmap/current-status.md#network-safety-port-scope-and-dns-pinning-verified-before-p15).
+
+## Status
+ACCEPTED
+
+
+---
+
+# ADR-025
+
+## Decision
+The operator interfaces are two clients of the one HTTP API. **CLI:** `offensivex` (`backend/src/offensivex/cli.py`) is a thin `httpx` client; it keeps a session token + CSRF token in an owner-only file and has no privileged path. Only `offensivex admin ...` touches the database directly (bootstrap of the first account). **Dashboard:** React + TypeScript + Vite (ADR-001), built to static files and served by the backend at `/dashboard`, so the browser has a single origin with the API. **Running a pipeline:** `POST /assessments/{id}/run` starts the existing pipeline as a background task of the API process; it returns 202 and clients poll `GET /assessments/{id}`.
+
+## Context
+P15/P16 needed a way to start the agent pipeline from a client (until now only `python -m offensivex.admin run-assessment` could), and a decision on how the browser reaches the API under cookie + CSRF authentication.
+
+## Alternatives
+- CLI that calls services directly against the database: rejected — it would bypass RBAC, CSRF and audit attribution and duplicate the API's rules.
+- Dashboard on its own origin (Vite dev server / separate host) with CORS and credentialed requests: rejected for the default path — more surface (origin allow-list, `SameSite` tuning) for no benefit; `npm run dev` with a proxy remains available for UI work.
+- A job queue/worker for assessments: deferred — nothing needs it yet (CLAUDE.md: no future-proofing).
+- TanStack Query/Table, Tailwind, Cytoscape from ADR-001: deferred; plain React state, tables and CSS were enough for the MVP. Attack paths are shown as a table, not a drawn graph.
+
+## Reasoning
+Both interfaces then inherit authentication, RBAC, CSRF, scope enforcement and audit logging from one place, and a test of the API is a test of both.
+
+## Trade-offs
+The pipeline runs inside the API process: a restart mid-run leaves the assessment `running` with no worker (it can be cancelled only before it starts; there is no resume). A double-launch guard is in-process and persisted-state based, so it is not safe across multiple API workers. The pipeline now ends with the deterministic attack-graph and risk step (previously nothing invoked them outside tests).
+
+## Consequences
+New routes (see docs/interfaces/api.md), `AgentRun.error` (derived from `output_ref`, no migration), `Settings.dashboard_dir`, the `offensivex` console script. Tests must use a separate database (`OFFENSIVEX_TEST_DATABASE_URL`): the migration tests recreate the schema.
+
+## Status
+ACCEPTED

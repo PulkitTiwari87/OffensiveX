@@ -31,19 +31,23 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
+from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from offensivex.agents.investigation import run_investigation_agent
 from offensivex.agents.recon import run_recon_agent
 from offensivex.agents.validation import run_validation_agent
 from offensivex.agents.vulnerability import run_vulnerability_agent
+from offensivex.attack_graph.engine import build_attack_graph, find_attack_paths
 from offensivex.core.errors import OffensiveXError
 from offensivex.core.logging import get_logger
 from offensivex.db import models
+from offensivex.db.session import session_scope
 from offensivex.db.transitions import assert_valid_transition
 from offensivex.llm.base import LLMProvider
+from offensivex.risk.engine import score_assessment_findings
 from offensivex.tools.adapters.dns_resolution import DnsResolutionAdapter
 from offensivex.tools.adapters.http_probe import HttpProbeAdapter
 from offensivex.tools.adapters.security_header_scan import SecurityHeaderScanAdapter
@@ -77,8 +81,8 @@ class PipelineResult:
         return [s for s in self.stages if not s.succeeded]
 
 
-def build_default_registry() -> ToolRegistry:
-    registry = ToolRegistry()
+def build_default_registry(*, allow_private_targets: bool = False) -> ToolRegistry:
+    registry = ToolRegistry(allow_private_targets=allow_private_targets)
     registry.register(DnsResolutionAdapter())
     registry.register(HttpProbeAdapter())
     registry.register(SecurityHeaderScanAdapter())
@@ -96,18 +100,52 @@ def _describe(exc: Exception) -> str:
     )
 
 
+def run_assessment_in_background(
+    session_factory: sessionmaker[Session],
+    *,
+    assessment_id: UUID,
+    llm_provider: LLMProvider,
+    allow_private_targets: bool,
+) -> None:
+    """Entry point for a server-side run with its own session (the request that
+    started it has already ended). Never raises: an unexpected crash marks the
+    assessment FAILED instead of leaving it RUNNING forever."""
+    try:
+        with session_scope(session_factory) as session:
+            assessment = session.get(models.Assessment, assessment_id)
+            if assessment is None:
+                return
+            run_assessment(
+                session,
+                assessment=assessment,
+                llm_provider=llm_provider,
+                allow_private_targets=allow_private_targets,
+            )
+    except Exception as exc:
+        log.error("pipeline.crashed", assessment_id=str(assessment_id), error=type(exc).__name__)
+        with session_scope(session_factory) as session:
+            assessment = session.get(models.Assessment, assessment_id)
+            if assessment is not None and assessment.status is models.AssessmentStatus.RUNNING:
+                assessment.status = models.AssessmentStatus.FAILED
+                assessment.finished_at = datetime.now(UTC)
+
+
 def run_assessment(
     session: Session,
     *,
     assessment: models.Assessment,
     llm_provider: LLMProvider,
     tool_registry: ToolRegistry | None = None,
+    allow_private_targets: bool = False,
 ) -> PipelineResult:
+    """`allow_private_targets` is the deployment switch
+    (`OFFENSIVEX_ALLOW_PRIVATE_TARGETS`); it only configures the default registry
+    and is ignored when a `tool_registry` is supplied."""
     if assessment.status is not models.AssessmentStatus.RUNNING:
         raise PipelineNotRunnableError(
             f"Assessment is {assessment.status.value!r}; only a running assessment can be run."
         )
-    registry = tool_registry or build_default_registry()
+    registry = tool_registry or build_default_registry(allow_private_targets=allow_private_targets)
     result = PipelineResult(final_status=models.AssessmentStatus.RUNNING)
 
     def new_run(agent_type: models.AgentType) -> models.AgentRun:
@@ -136,6 +174,8 @@ def run_assessment(
                 "pipeline.stage_failed", agent=agent.value, error=type(exc).__name__, exc_info=True
             )
             outcome = StageResult(agent.value, str(run.id), False, subject, _describe(exc))
+            # Persist the reason so the API/CLI/dashboard can show why a stage failed.
+            run.output_ref = {"error": outcome.error}
         result.stages.append(outcome)
         session.commit()  # persist this stage's rows, including a FAILED run
         return outcome.succeeded
@@ -233,6 +273,20 @@ def run_assessment(
                     ),
                     subject=str(finding.id),
                 )
+
+    if ok:
+        # Deterministic post-processing (no LLM): attack graph, then risk scores,
+        # computed from the findings' final statuses.
+        try:
+            build_attack_graph(session, assessment)
+            find_attack_paths(session, assessment)
+            score_assessment_findings(session, assessment)
+            session.commit()
+            result.stages.append(StageResult("attack_graph_risk", "", True))
+        except Exception as exc:
+            log.warning("pipeline.risk_failed", error=type(exc).__name__, exc_info=True)
+            session.rollback()
+            result.stages.append(StageResult("attack_graph_risk", "", False, None, _describe(exc)))
 
     if not ok:
         final = models.AssessmentStatus.FAILED

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from offensivex.auth.principal import Principal
 from offensivex.core.errors import NotFoundError, OffensiveXError, PermissionDeniedError
+from offensivex.core.ports import normalize_port_spec
 from offensivex.core.urls import InvalidUrlError, parse_http_url
 from offensivex.db import models
 from offensivex.db.transitions import assert_valid_transition
@@ -70,8 +71,8 @@ def assert_entry_point_in_scope(entry_point: str, rules: Sequence[ScopeRuleLike]
     """The entry point's host must be allowed by the scope rules — the same
     default-deny, exclude-wins check the Scope Guard applies to every tool
     call. An entry point is a starting point, never extra permission."""
-    host = parse_http_url(entry_point, allow_query=False).host
-    result = check_destination(host, list(rules))
+    parsed = parse_http_url(entry_point, allow_query=False)
+    result = check_destination(parsed.host, list(rules), parsed.port)
     if not result.allowed:
         raise EntryPointOutOfScopeError(
             f"Entry point {entry_point!r} is not covered by the authorization's scope: "
@@ -114,6 +115,21 @@ def get_target(session: Session, target_id: object) -> models.Target:
     if target is None:
         raise NotFoundError(f"Target {target_id!r} does not exist.")
     return target
+
+
+def list_targets(session: Session) -> list[models.Target]:
+    return list(session.scalars(select(models.Target).order_by(models.Target.created_at.desc())))
+
+
+def list_authorizations(session: Session, target_id: object) -> list[models.Authorization]:
+    get_target(session, target_id)  # 404s if the target doesn't exist
+    return list(
+        session.scalars(
+            select(models.Authorization)
+            .where(models.Authorization.target_id == target_id)
+            .order_by(models.Authorization.version.desc())
+        )
+    )
 
 
 def submit_authorization(
@@ -166,6 +182,7 @@ def submit_authorization(
                 rule_type=rule.rule_type,
                 pattern=rule.pattern,
                 is_exclusion=rule.is_exclusion,
+                ports=normalize_port_spec(rule.ports) if rule.ports is not None else None,
             )
         )
     session.flush()

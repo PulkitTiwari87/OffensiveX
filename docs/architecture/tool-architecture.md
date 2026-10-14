@@ -35,7 +35,7 @@ Full tool-by-tool detail, including which specific binaries are planned vs. impl
 ```
 class ToolAdapter(Protocol):
     meta: AdapterMeta        # name, capability, intrusiveness, requires_validation_mode, status
-    def plan(self, request) -> ExecutionPlan: ...   # declares every destination it will touch
+    def plan(self, request) -> ExecutionPlan: ...   # declares every destination (host + TCP port) it will touch; see ../security/network-safety.md
     def parse(self, raw_artifact) -> ParsedResult: ...  # pure function, raw bytes -> typed result
 ```
 

@@ -4,38 +4,54 @@ blueprint.md section 9's MVP recon surface: "DNS + HTTP probing").
 docs/tools/tool-registry.md names "httpx (engine-provided client)" as the
 candidate implementation. This adapter uses the standard library instead
 (`socket` + `ssl`), for the same "Standard Library First" reason as the
-DNS resolution adapter — and because doing so is what makes Guardrail.md
-section 2.8's IP-pinning guarantee straightforward to implement correctly:
+DNS resolution adapter — and because owning the connection is what makes
+Guardrail.md section 2.8's IP-pinning guarantee enforceable rather than hoped for
+(an HTTP client that is handed a hostname resolves it itself, again, at connect time):
 
 > "Destinations are resolved once, validated, and the tool is given the
 > validated IP (pinned) to prevent DNS-rebinding / time-of-check-to-time-
 > of-use escapes."
 
-This adapter resolves the hostname itself right before connecting and
-connects to that resolved IP directly (`socket.create_connection((ip,
-port), ...)`), never letting a second, later DNS lookup decide where the
-connection actually goes. For HTTPS, the TLS handshake still verifies the
-certificate against the *original hostname* (`server_hostname=hostname`)
-while the raw socket is connected to the pinned IP — a real client
-re-resolving mid-request could not get this combination "for free" the
-way this adapter does by construction.
+`run()` therefore does exactly this, in order (docs/security/network-safety.md):
 
-**Known limitation, not hidden:** redirects are reported, not followed.
-Guardrail.md section 2.3 requires per-hop scope re-checking for any
-capability that follows redirects; correctly re-running the Scope Guard on
-each hop is a real feature, not a one-line addition, and is deferred
-until a capability actually needs to follow a redirect (not before).
+1. resolves the hostname **once** (an IP-literal host is not resolved at all);
+2. validates **every** returned address with `network_guard.check_resolved_addresses`
+   (metadata / private / loopback / link-local / exclude-rule checks; one bad answer
+   rejects the whole set);
+3. connects to an approved **IP literal** — never the name — so no second lookup
+   exists to be rebound, and checks `getpeername()` against that address;
+4. for HTTPS, wraps that socket with `server_hostname=<original hostname>` and a
+   verifying context, so the certificate is validated for the name the operator
+   authorized while the bytes go to the validated IP; the `Host:` header carries the
+   original name and port.
+
+The hostname *and port* were already checked by the Scope Guard (`plan()` declares
+both); a `run()` that is not handed a `NetworkContext` refuses to connect.
+
+**Redirects are reported, never followed** (3xx responses are returned as data; the
+`Location` header is just a header). So a redirect cannot move the probe to a host or
+port that was not authorized: the only way to contact the target of a redirect is
+for the agent to request it as a new `http_probe`, which goes back through the
+Scope Guard and this adapter's address checks like any other request. Following
+redirects with per-hop re-validation is a deliberate non-goal until a capability
+needs it (Guardrail.md section 2.3).
 """
 
 from __future__ import annotations
 
 import socket
-from ssl import create_default_context
+import ssl
+from collections.abc import Callable
 from typing import Any
 
 from offensivex.core.urls import parse_http_url
 from offensivex.tools.adapters.dns_resolution import Resolver
 from offensivex.tools.adapters.dns_resolution import _default_resolver as _resolve_hostname
+from offensivex.tools.network_guard import (
+    NetworkPolicyError,
+    check_resolved_addresses,
+    verify_peer,
+)
 from offensivex.tools.registry import (
     AdapterMeta,
     ExecutionPlan,
@@ -43,6 +59,8 @@ from offensivex.tools.registry import (
     Intrusiveness,
     ParsedResult,
 )
+
+Connector = Callable[[tuple[str, int], float], socket.socket]
 
 _DEFAULT_CONNECT_TIMEOUT = 10
 _DEFAULT_READ_CAP_BYTES = 65536
@@ -61,8 +79,16 @@ class HttpProbeAdapter:
         *,
         connect_timeout: float = _DEFAULT_CONNECT_TIMEOUT,
         read_cap_bytes: int = _DEFAULT_READ_CAP_BYTES,
+        connector: Connector = socket.create_connection,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> None:
+        # `resolver`, `connector` and `ssl_context` are injectable so tests can use a
+        # deterministic DNS answer, observe exactly what is connected to, and trust a
+        # test CA. Production uses the defaults: the system resolver, a plain TCP
+        # connect (always given an IP literal), and a verifying default TLS context.
         self._resolver = resolver
+        self._connector = connector
+        self._ssl_context = ssl_context
         self._connect_timeout = connect_timeout
         self._read_cap_bytes = read_cap_bytes
         self.meta = AdapterMeta(
@@ -79,58 +105,63 @@ class HttpProbeAdapter:
         )
 
     def plan(self, request: dict[str, Any]) -> ExecutionPlan:
-        # The one strict parser (offensivex.core.urls): the host that goes into
-        # `destinations` for the Scope Guard is, by construction, the host
-        # `run()` connects to — both come from the same normalized URL, and
-        # ambiguous forms (userinfo, backslashes, 2130706433, ...) are refused
-        # here rather than interpreted. InvalidUrlError is a ValueError.
+        # The one strict parser (offensivex.core.urls): the host and port that go into
+        # the plan for the Scope Guard are, by construction, the host and port `run()`
+        # connects to — both come from the same normalized URL, and ambiguous forms
+        # (userinfo, backslashes, 2130706433, ...) are refused here rather than
+        # interpreted. InvalidUrlError is a ValueError.
         parsed = parse_http_url(request["url"], allow_query=True)
         return ExecutionPlan(
             capability=self.meta.capability,
             destinations=[parsed.host],
             request={**request, "url": parsed.url},
+            ports=[parsed.port],
         )
 
     def run(self, plan: ExecutionPlan) -> bytes:
+        if plan.network is None:
+            raise NetworkPolicyError(
+                "No network policy context was supplied; refusing to connect (fail-closed)."
+            )
         parsed = parse_http_url(plan.request["url"], allow_query=True)
         hostname = parsed.host
         port = parsed.port
-        scheme = parsed.scheme
         path = parsed.path if not parsed.query else f"{parsed.path}?{parsed.query}"
 
-        addresses = self._resolver(hostname)
-        if not addresses:
-            raise RuntimeError(f"DNS resolution for {hostname!r} returned no addresses.")
+        # Resolve ONCE, validate every answer, then connect only to approved IP
+        # literals. Nothing below ever resolves `hostname` again.
+        resolved = [hostname] if parsed.is_ip else self._resolver(hostname)
+        approved = check_resolved_addresses(hostname, port, resolved, plan.network)
 
-        # Try each resolved address in order (e.g. a dual-stack host whose
-        # IPv6 address resolves but isn't actually reachable) rather than
-        # only ever trying the first and failing outright — but still
-        # pinned: once one connects, every byte of this request goes to
-        # that exact address, never a fresh lookup.
-        raw_sock = None
-        pinned_ip = None
+        # Try each approved address in order (e.g. a dual-stack host whose IPv6
+        # address is not actually reachable) — still pinned: once one connects,
+        # every byte of this request goes to that exact address.
+        raw_sock: socket.socket | None = None
+        pinned_ip: str | None = None
         last_error: OSError | None = None
-        for candidate in addresses:
+        for candidate in approved:
             try:
-                raw_sock = socket.create_connection(
-                    (candidate, port), timeout=self._connect_timeout
-                )
-                pinned_ip = candidate
-                break
+                candidate_sock = self._connector((candidate, port), self._connect_timeout)
             except OSError as exc:
                 last_error = exc
+                continue
+            try:
+                verify_peer(candidate_sock, candidate)
+            except NetworkPolicyError:
+                candidate_sock.close()
+                raise
+            raw_sock, pinned_ip = candidate_sock, candidate
+            break
         if raw_sock is None or pinned_ip is None:
             raise RuntimeError(
-                f"Could not connect to any resolved address for {hostname!r}: {addresses}"
+                f"Could not connect to any approved address for {hostname!r}: {approved}"
             ) from last_error
 
+        sock: socket.socket = raw_sock
         try:
-            sock: socket.socket
-            if scheme == "https":
-                context = create_default_context()
+            if parsed.scheme == "https":
+                context = self._ssl_context or ssl.create_default_context()
                 sock = context.wrap_socket(raw_sock, server_hostname=hostname)
-            else:
-                sock = raw_sock
 
             request_bytes = (
                 f"GET {path} HTTP/1.1\r\n"
@@ -151,6 +182,7 @@ class HttpProbeAdapter:
                 total += len(chunk)
             raw_response = b"".join(chunks)
         finally:
+            sock.close()
             raw_sock.close()
 
         # Prepend the pinned IP (not otherwise recoverable from the raw

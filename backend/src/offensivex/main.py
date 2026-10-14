@@ -18,11 +18,14 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import structlog
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from offensivex.api import (
@@ -34,6 +37,7 @@ from offensivex.api import (
     findings,
     health,
     reports,
+    system,
     targets,
     users,
 )
@@ -88,6 +92,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.llm_provider = try_get_llm_provider(settings)
     app.state.db_engine = create_db_engine(settings)
     app.state.session_factory = create_session_factory(app.state.db_engine)
+    # Assessments whose pipeline is executing in this process (double-launch guard).
+    app.state.running_assessments = set()
 
     app.add_middleware(
         CORSMiddleware,
@@ -141,9 +147,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1_router.include_router(attack_graph.router)
     v1_router.include_router(reports.router)
     v1_router.include_router(reports.detail_router)
+    v1_router.include_router(system.router)
     app.include_router(v1_router)
+    _mount_dashboard(app, settings)
 
     return app
+
+
+class _SpaStaticFiles(StaticFiles):
+    """Static files with a fallback to index.html so client-side routes survive a reload."""
+
+    async def get_response(self, path: str, scope):  # type: ignore[no-untyped-def]
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404 and "." not in path.rsplit("/", 1)[-1]:
+                return await super().get_response("index.html", scope)
+            raise
+
+
+def _mount_dashboard(app: FastAPI, settings: Settings) -> None:
+    """Serve the built dashboard, if there is one. It is static code only: it holds
+    no data and no secrets, and everything it shows comes from authenticated API calls."""
+    default = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+    directory = Path(settings.dashboard_dir) if settings.dashboard_dir else default
+    if not (directory / "index.html").is_file():
+        return
+
+    @app.get("/", include_in_schema=False)
+    def _root() -> RedirectResponse:
+        return RedirectResponse("/dashboard/")
+
+    app.mount("/dashboard", _SpaStaticFiles(directory=directory, html=True), name="dashboard")
 
 
 app = create_app()

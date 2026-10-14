@@ -360,6 +360,10 @@ class ScopeRule(Base):
     rule_type: Mapped[str] = mapped_column(String(50), nullable=False)
     pattern: Mapped[str] = mapped_column(String(500), nullable=False)
     is_exclusion: Mapped[bool] = mapped_column(nullable=False, default=False)
+    # Port restriction (offensivex.core.ports): "80,443,8000-8100". NULL is the
+    # legacy / host-only form: an include rule then covers ports 80 and 443 only,
+    # an exclude rule covers every port (ADR-024).
+    ports: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = _created_at()
 
     authorization: Mapped[Authorization] = relationship(back_populates="scope_rules")
@@ -508,6 +512,10 @@ class Finding(Base):
     asset: Mapped[Asset] = relationship()
     evidence: Mapped[list[Evidence]] = relationship(back_populates="finding")
 
+    @property
+    def asset_identifier(self) -> str:
+        return self.asset.canonical_key
+
 
 class Evidence(Base):
     """A specific artifact backing a finding. Immutable once written.
@@ -565,6 +573,12 @@ class AgentRun(Base):
 
     assessment: Mapped[Assessment] = relationship(back_populates="agent_runs")
     tool_executions: Mapped[list[ToolExecution]] = relationship(back_populates="agent_run")
+
+    @property
+    def error(self) -> str | None:
+        """Why a failed run failed (written by the pipeline into `output_ref`)."""
+        value = (self.output_ref or {}).get("error")
+        return value if isinstance(value, str) else None
 
 
 class ToolExecution(Base):

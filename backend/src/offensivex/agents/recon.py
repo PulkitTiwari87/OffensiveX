@@ -154,11 +154,17 @@ def run_recon_agent(
             # never infer a port from the target name. It grants nothing: the
             # Scope Guard still checks every call against the scope below.
             "entry_point": assessment.target.entry_point,
+            # `ports` absent = the web defaults (80, 443) for an in-scope rule; an
+            # excluded rule without `ports` is excluded on every port.
             "in_scope": [
-                {"type": r.rule_type, "pattern": r.pattern} for r in rules if not r.is_exclusion
+                {"type": r.rule_type, "pattern": r.pattern, "ports": r.ports or "80,443"}
+                for r in rules
+                if not r.is_exclusion
             ],
             "excluded": [
-                {"type": r.rule_type, "pattern": r.pattern} for r in rules if r.is_exclusion
+                {"type": r.rule_type, "pattern": r.pattern, "ports": r.ports or "all"}
+                for r in rules
+                if r.is_exclusion
             ],
             "scan_mode": assessment.scan_mode.value,
         },

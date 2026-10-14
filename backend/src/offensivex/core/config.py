@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"  # noqa: S104
     api_port: int = 8000
     api_cors_origins: list[str] = Field(default_factory=list)
+    # Built dashboard (`npm run build` in frontend/) served at /dashboard by this
+    # process, so the browser talks to one origin (cookie auth, no CORS). Unset:
+    # <repo>/frontend/dist if it exists. Static files only; every data call still
+    # goes through the authenticated API.
+    dashboard_dir: str | None = None
 
     # --- Logging ---------------------------------------------------------------
     log_level: str = "INFO"

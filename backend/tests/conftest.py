@@ -1,11 +1,37 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from offensivex.core.config import Settings
 from offensivex.main import create_app
+
+
+def _load_test_database_url() -> None:
+    """Integration tests drop and recreate the schema, so they must never share a
+    database with the one the dashboard/CLI use. Take OFFENSIVEX_TEST_DATABASE_URL
+    from backend/.env when it is not already in the environment (this is the only
+    key read from that file; the rest of `.env` is ignored by tests)."""
+    key = "OFFENSIVEX_TEST_DATABASE_URL"
+    env_file = Path(__file__).resolve().parents[1] / ".env"
+    if key not in os.environ and env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            name, _, value = line.partition("=")
+            if name.strip() == key and value.strip():
+                os.environ[key] = value.strip()
+                break
+    if key in os.environ:
+        # Alembic (migrations/env.py) and any `Settings()` read DATABASE_URL, so the
+        # whole test process is pointed at the test database, not just the tests that
+        # look at the TEST_ variable.
+        os.environ["OFFENSIVEX_DATABASE_URL"] = os.environ[key]
+
+
+_load_test_database_url()
 
 
 @pytest.fixture(autouse=True)

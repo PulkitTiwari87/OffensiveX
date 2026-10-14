@@ -44,6 +44,10 @@ from tests.integration.auth_support import create_user, login
 
 pytestmark = pytest.mark.integration
 
+# Explicit lab opt-in (ADR-024): a host-only rule covers ports 80/443 only, and these
+# tests start local servers on ephemeral ports.
+LAB_PORTS = "1024-65535"
+
 
 # --- fixtures and helpers ---------------------------------------------------
 
@@ -115,7 +119,7 @@ def make_assessment(session: Session, *, validation_enabled: bool = False) -> mo
     authorization = targets_service.submit_authorization(
         session,
         target_id=target.id,
-        scope_rules=[ScopeRuleInput(rule_type="domain", pattern="localhost")],
+        scope_rules=[ScopeRuleInput(rule_type="domain", pattern="localhost", ports=LAB_PORTS)],
         attestation="attestation",
         valid_from=now,
         valid_until=now + timedelta(days=1),
@@ -195,7 +199,7 @@ class Scripted:
 
 
 def registry(*adapters: Any) -> ToolRegistry:
-    reg = ToolRegistry()
+    reg = ToolRegistry(allow_private_targets=True)
     for adapter in adapters:
         reg.register(adapter)
     return reg
@@ -230,7 +234,10 @@ def test_recon_prompt_carries_scope_and_a_bad_request_is_fed_back(session: Sessi
         agent_run=run,
     )
     assert run.status is models.AgentRunStatus.SUCCEEDED
-    assert '"in_scope": [{"type": "domain", "pattern": "localhost"}]' in llm.prompts[0]
+    assert (
+        '"in_scope": [{"type": "domain", "pattern": "localhost", "ports": "1024-65535"}]'
+        in llm.prompts[0]
+    )
     assert '{"hostname": "<an in-scope hostname>"}' in llm.prompts[0]
     assert "invalid request (KeyError)" in llm.prompts[1]  # the model was told what was wrong
     assert tool_executions(session, run) == 1  # the malformed attempt executed nothing
@@ -548,7 +555,10 @@ def test_full_pipeline_runs_every_agent_and_only_tool_results_create_findings(
     url = f"http://localhost:{serve()}/"
     assessment = make_assessment(session, validation_enabled=True)
     result = pipeline.run_assessment(
-        session, assessment=assessment, llm_provider=PipelineModel(url)
+        session,
+        assessment=assessment,
+        llm_provider=PipelineModel(url),
+        allow_private_targets=True,
     )
 
     assert result.final_status is models.AssessmentStatus.COMPLETED and not result.failures
@@ -570,7 +580,10 @@ def test_pipeline_without_validation_opt_in_never_runs_the_validation_agent(
     url = f"http://localhost:{serve()}/"
     assessment = make_assessment(session, validation_enabled=False)
     result = pipeline.run_assessment(
-        session, assessment=assessment, llm_provider=PipelineModel(url)
+        session,
+        assessment=assessment,
+        llm_provider=PipelineModel(url),
+        allow_private_targets=True,
     )
     assert "validation" not in [s.agent for s in result.stages]
     assert set(_statuses(session, assessment)) == {models.FindingStatus.INVESTIGATING}
@@ -582,7 +595,10 @@ def test_lying_investigations_are_reported_and_those_findings_are_not_validated(
     url = f"http://localhost:{serve()}/"
     assessment = make_assessment(session, validation_enabled=True)
     result = pipeline.run_assessment(
-        session, assessment=assessment, llm_provider=PipelineModel(url, investigation_lies=True)
+        session,
+        assessment=assessment,
+        llm_provider=PipelineModel(url, investigation_lies=True),
+        allow_private_targets=True,
     )
     assert result.final_status is models.AssessmentStatus.COMPLETED_WITH_ERRORS
     assert [s.agent for s in result.failures] == ["investigation"] * 3

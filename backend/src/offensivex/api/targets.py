@@ -68,6 +68,9 @@ class ScopeRuleRequest(BaseModel):
     rule_type: str = Field(min_length=1, max_length=50)
     pattern: str = Field(min_length=1, max_length=500)
     is_exclusion: bool = False
+    # "80,443,8000-8100". Omitted: an include rule covers ports 80/443 only and an
+    # exclude rule covers every port (docs/security/network-safety.md, ADR-024).
+    ports: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class AuthorizationSubmitRequest(BaseModel):
@@ -77,6 +80,15 @@ class AuthorizationSubmitRequest(BaseModel):
     valid_until: datetime
 
 
+class ScopeRuleResponse(BaseModel):
+    rule_type: str
+    pattern: str
+    is_exclusion: bool
+    ports: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class AuthorizationResponse(BaseModel):
     id: UUID
     target_id: UUID
@@ -84,6 +96,10 @@ class AuthorizationResponse(BaseModel):
     status: models.AuthorizationStatus
     valid_from: datetime
     valid_until: datetime
+    attestation: str | None = None
+    submitted_by_id: UUID | None = None
+    decided_by_id: UUID | None = None
+    scope_rules: list[ScopeRuleResponse] = []
 
     model_config = {"from_attributes": True}
 
@@ -118,6 +134,26 @@ def create_target(
 
 
 @router.get(
+    "",
+    response_model=list[TargetResponse],
+    dependencies=[Depends(require_permission(Permission.DATA_READ))],
+)
+def list_targets(session: Annotated[Session, Depends(get_db_session)]) -> list[models.Target]:
+    return targets_service.list_targets(session)
+
+
+@router.get(
+    "/{target_id}/authorizations",
+    response_model=list[AuthorizationResponse],
+    dependencies=[Depends(require_permission(Permission.DATA_READ))],
+)
+def list_authorizations(
+    target_id: UUID, session: Annotated[Session, Depends(get_db_session)]
+) -> list[models.Authorization]:
+    return targets_service.list_authorizations(session, target_id)
+
+
+@router.get(
     "/{target_id}",
     response_model=TargetResponse,
     dependencies=[Depends(require_permission(Permission.DATA_READ))],
@@ -146,7 +182,12 @@ def submit_authorization(
         session,
         target_id=target_id,
         scope_rules=[
-            ScopeRuleInput(rule_type=r.rule_type, pattern=r.pattern, is_exclusion=r.is_exclusion)
+            ScopeRuleInput(
+                rule_type=r.rule_type,
+                pattern=r.pattern,
+                is_exclusion=r.is_exclusion,
+                ports=r.ports,
+            )
             for r in body.scope_rules
         ],
         attestation=body.attestation,

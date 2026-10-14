@@ -81,6 +81,14 @@ MATRIX: list[tuple[str, str, Permission, dict | None]] = [
     ("GET", "/api/v1/users", Permission.USERS_MANAGE, None),
     ("PATCH", "/api/v1/users/{user_id}", Permission.USERS_MANAGE, {"is_active": True}),
     ("GET", "/api/v1/audit-log", Permission.AUDIT_READ, None),
+    ("GET", "/api/v1/targets", Permission.DATA_READ, None),
+    ("GET", "/api/v1/targets/{target_id}/authorizations", Permission.DATA_READ, None),
+    ("GET", "/api/v1/assessments", Permission.DATA_READ, None),
+    ("POST", "/api/v1/assessments/{assessment_id}/run", Permission.ASSESSMENTS_WRITE, None),
+    ("GET", "/api/v1/assessments/{assessment_id}/reports", Permission.DATA_READ, None),
+    ("GET", "/api/v1/findings", Permission.DATA_READ, None),
+    ("GET", "/api/v1/system/status", Permission.DATA_READ, None),
+    ("GET", "/api/v1/overview", Permission.DATA_READ, None),
 ]
 # Any authenticated user (no specific permission): checked for 401 only.
 AUTH_ONLY = {("GET", "/api/v1/auth/me"), ("POST", "/api/v1/auth/logout")}

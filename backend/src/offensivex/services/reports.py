@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from offensivex.core.errors import NotFoundError
@@ -29,6 +30,17 @@ def generate_report(
     so in its provenance (`ai_summary.status == "skipped"`)."""
     assessment = get_assessment(session, assessment_id)
     return build_report(session, assessment, formats=formats, llm_provider=llm_provider)
+
+
+def list_reports(session: Session, *, assessment_id: UUID) -> list[models.Report]:
+    get_assessment(session, assessment_id)  # 404s if the assessment doesn't exist
+    return list(
+        session.scalars(
+            select(models.Report)
+            .where(models.Report.assessment_id == assessment_id)
+            .order_by(models.Report.generated_at.desc())
+        )
+    )
 
 
 def get_report(session: Session, report_id: UUID) -> models.Report:

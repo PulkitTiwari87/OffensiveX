@@ -28,7 +28,9 @@ The platform must not be designed, documented, or marketed around unauthorized t
 5. Scope-widening requires a new authorization approval, which is audit-logged. A running scan never widens its own scope.
 6. Catch-all and overly broad rules (`0.0.0.0/0`, `::/0`, TLD-only wildcards, CIDRs wider than the configured limit) are rejected at validation time.
 7. Loopback, link-local, private-range, and cloud-metadata destinations (e.g. `169.254.169.254`) are denied unless they are explicitly listed in scope **and** the deployment permits private targets (`OFFENSIVEX_ALLOW_PRIVATE_TARGETS`).
-8. Destinations are resolved **once**, validated, and the tool is given the validated IP (pinned) to prevent DNS-rebinding / time-of-check-to-time-of-use escapes.
+8. Destinations are resolved **once**, validated, and the tool is given the validated IP (pinned) to prevent DNS-rebinding / time-of-check-to-time-of-use escapes. Every resolved address is validated (one bad answer rejects the whole resolution), the connection goes to an approved IP literal and its peer is verified, and TLS is verified against the original hostname. Cloud-metadata addresses are **never** contacted, even when rule 7's opt-ins are present ([ADR-024](Decision.md), [security/network-safety.md](security/network-safety.md)).
+9. Scope is checked on **host and port**. A rule authorizes only the ports it names; an include rule without `ports` covers the web defaults 80 and 443 only, an exclude rule without `ports` covers every port. A hostname grant never implies every port.
+10. Redirects are never followed by a tool; a redirect target is just another request and must pass rules 1–9 on its own.
 
 ## 3. Safety — never
 

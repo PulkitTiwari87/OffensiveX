@@ -22,6 +22,7 @@ import ipaddress
 from dataclasses import dataclass
 
 from offensivex.core.errors import OffensiveXError
+from offensivex.core.ports import InvalidPortSpecError, parse_port_spec
 
 # Exact catch-all patterns Guardrail.md section 2.6 names: "0.0.0.0/0,
 # ::/0, TLD-only wildcards". A bare "*" is the degenerate TLD-only case for
@@ -44,6 +45,9 @@ class ScopeRuleInput:
     rule_type: str
     pattern: str
     is_exclusion: bool = False
+    # None = host-only rule: an include covers ports 80/443 only, an exclude
+    # covers every port (offensivex.core.ports, ADR-024).
+    ports: str | None = None
 
 
 def _is_tld_only_wildcard(pattern: str) -> bool:
@@ -99,6 +103,13 @@ def validate_scope_rules(rules: list[ScopeRuleInput], *, allow_private_targets: 
         raise ScopeValidationError("An authorization must have at least one scope rule.")
 
     for rule in rules:
+        if rule.ports is not None:
+            try:
+                parse_port_spec(rule.ports)
+            except InvalidPortSpecError as exc:
+                raise ScopeValidationError(
+                    f"Scope rule {rule.pattern!r} has invalid ports {rule.ports!r}: {exc}"
+                ) from None
         if rule.pattern in _CATCH_ALL_CIDRS or rule.pattern in _CATCH_ALL_PATTERNS:
             raise ScopeValidationError(
                 f"Scope rule {rule.pattern!r} is a catch-all and is never allowed "

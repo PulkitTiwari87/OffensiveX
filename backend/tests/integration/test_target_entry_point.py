@@ -36,7 +36,10 @@ from tests.integration.auth_support import authenticated_client
 
 pytestmark = pytest.mark.integration
 
-LAB_RULES = [ScopeRuleInput(rule_type="domain", pattern="localhost")]
+# Explicit lab opt-in (ADR-024): a host-only rule covers ports 80/443 only, and the
+# lab servers below listen on ephemeral ports.
+LAB_PORTS = "1024-65535"
+LAB_RULES = [ScopeRuleInput(rule_type="domain", pattern="localhost", ports=LAB_PORTS)]
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
@@ -196,7 +199,7 @@ def finish() -> AgentStep:
 
 
 def registry() -> ToolRegistry:
-    reg = ToolRegistry()
+    reg = ToolRegistry(allow_private_targets=True)
     reg.register(DnsResolutionAdapter())
     reg.register(HttpProbeAdapter())
     return reg
@@ -387,8 +390,8 @@ def _target_via_api(client, entry_point: str) -> str:
     return response.json()["id"]
 
 
-def _domain(pattern: str, *, exclude: bool = False) -> dict:
-    return {"rule_type": "domain", "pattern": pattern, "is_exclusion": exclude}
+def _domain(pattern: str, *, exclude: bool = False, ports: str | None = None) -> dict:
+    return {"rule_type": "domain", "pattern": pattern, "is_exclusion": exclude, "ports": ports}
 
 
 def _cidr(pattern: str) -> dict:
@@ -398,7 +401,24 @@ def _cidr(pattern: str) -> dict:
 @pytest.mark.parametrize(
     ("entry_point", "rules", "accepted"),
     [
-        ("https://app.example.test:8443/", [_domain("app.example.test")], True),
+        # A host-only include rule covers the web default ports (80, 443) only (ADR-024).
+        ("https://app.example.test:8443/", [_domain("app.example.test")], False),
+        ("https://app.example.test:8443/", [_domain("app.example.test", ports="8443")], True),
+        ("https://app.example.test:8443/", [_domain("app.example.test", ports="443")], False),
+        ("http://app.example.test:8080/", [_domain("app.example.test", ports="8000-8100")], True),
+        (
+            "https://app.example.test:8443/",
+            [_domain("app.example.test", ports="8443"), _domain("app.example.test", exclude=True)],
+            False,
+        ),
+        (
+            "https://app.example.test:8443/",
+            [
+                _domain("app.example.test", ports="8443,9443"),
+                _domain("app.example.test", exclude=True, ports="8443"),
+            ],
+            False,
+        ),
         ("https://app.example.test/", [_domain("*.example.test")], True),
         ("https://example.test/", [_domain("*.example.test")], False),
         ("https://other.test/", [_domain("app.example.test")], False),
