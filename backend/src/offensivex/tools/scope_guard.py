@@ -33,9 +33,15 @@ from typing import Protocol
 
 
 class ScopeRuleLike(Protocol):
-    rule_type: str
-    pattern: str
-    is_exclusion: bool
+    """Read-only view of a rule: satisfied by the ORM `ScopeRule` and by the
+    frozen `ScopeRuleInput` alike (the guard never mutates a rule)."""
+
+    @property
+    def rule_type(self) -> str: ...
+    @property
+    def pattern(self) -> str: ...
+    @property
+    def is_exclusion(self) -> bool: ...
 
 
 @dataclass(frozen=True)

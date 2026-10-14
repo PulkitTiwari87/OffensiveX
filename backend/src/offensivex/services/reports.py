@@ -12,23 +12,23 @@ from sqlalchemy.orm import Session
 
 from offensivex.core.errors import NotFoundError
 from offensivex.db import models
+from offensivex.llm.base import LLMProvider
 from offensivex.reporting.builder import build_report
 from offensivex.services.assessments import get_assessment
 
 
 def generate_report(
-    session: Session, *, assessment_id: UUID, formats: list[str] | None = None
+    session: Session,
+    *,
+    assessment_id: UUID,
+    formats: list[str] | None = None,
+    llm_provider: LLMProvider | None = None,
 ) -> models.Report:
-    """`llm_provider` is intentionally not a parameter here: no concrete
-    provider is wired into the running application yet (see
-    docs/roadmap/current-status.md), so the HTTP-reachable path always
-    generates a report without an AI-authored executive summary rather
-    than silently pretending to have one. Callers with a real provider
-    (tests, a future worker) use `offensivex.reporting.builder.build_report`
-    directly.
-    """
+    """`llm_provider` is the application's configured provider, or None when
+    the LLM is disabled — in which case the report has no AI summary and says
+    so in its provenance (`ai_summary.status == "skipped"`)."""
     assessment = get_assessment(session, assessment_id)
-    return build_report(session, assessment, formats=formats)
+    return build_report(session, assessment, formats=formats, llm_provider=llm_provider)
 
 
 def get_report(session: Session, report_id: UUID) -> models.Report:

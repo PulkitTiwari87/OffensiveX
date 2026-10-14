@@ -87,10 +87,37 @@ class Settings(BaseSettings):
     # framework, Phase 5 — see docs/architecture/agent-architecture.md and
     # backend/src/offensivex/llm/base.py). No provider is implemented in Phase 0;
     # the first provider/model is intentionally undecided. ----------------------
+    # Provider-agnostic: nothing below is vendor-specific. `llm_base_url` is
+    # optional (a proxy, or any OpenAI-compatible server for the "openai"/
+    # "local" providers). Timeout/retry/token bounds exist so a misbehaving
+    # provider can never cause an unbounded wait, retry loop, or spend.
     llm_enabled: bool = False
     llm_provider: LLMProviderName | None = None
     llm_model: str | None = None
     llm_api_key: SecretStr | None = None
+    llm_base_url: str | None = None
+    llm_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
+    llm_max_output_tokens: int = Field(default=2048, ge=64, le=16384)
+    # A prompt larger than this is refused before it is sent (token-spend bound).
+    llm_max_prompt_chars: int = Field(default=60000, ge=1000)
+
+    # --- Authentication / RBAC (ADR-012, ADR-013) --------------------------------
+    session_ttl_minutes: int = Field(default=480, ge=1, le=60 * 24 * 14)
+    session_cookie_name: str = "ofx_session"
+    # Brute-force throttle: after this many failed logins for a username within
+    # the window, further attempts get 429 until the window passes. (Counted
+    # from the audit log, so it survives restarts and works across workers.)
+    login_max_failures: int = Field(default=5, ge=1)
+    login_failure_window_minutes: int = Field(default=15, ge=1)
+    # ADR-013: an admin may approve an authorization they submitted themselves
+    # only when this is true (single-user lab setups). Default false.
+    allow_self_approval: bool = False
+
+    @property
+    def session_cookie_secure(self) -> bool:
+        """ADR-012: cookie flags relax only for explicit development/test."""
+        return self.environment not in ("development", "test")
 
     @model_validator(mode="after")
     def _validate_production_safety(self) -> Settings:
@@ -101,6 +128,43 @@ class Settings(BaseSettings):
         secret key. This is a startup-time check, not a runtime one — an
         insecure production configuration must never serve a single request.
         """
+        if "*" in self.api_cors_origins:
+            # Credentialed (cookie) CORS with a wildcard would let any site
+            # make authenticated requests as the user.
+            raise ValueError(
+                "OFFENSIVEX_API_CORS_ORIGINS must list explicit origins; '*' is not allowed "
+                "because the API uses cookie sessions."
+            )
+        if self.llm_enabled:
+            missing = [
+                name
+                for name, value in (("PROVIDER", self.llm_provider), ("MODEL", self.llm_model))
+                if not value
+            ]
+            # A local OpenAI-compatible server may legitimately need no key.
+            if self.llm_provider != "local" and not (
+                self.llm_api_key and self.llm_api_key.get_secret_value()
+            ):
+                missing.append("API_KEY")
+            if self.llm_provider == "local" and not self.llm_base_url:
+                missing.append("BASE_URL")
+            if (
+                self.llm_provider == "openai"
+                and not self.llm_base_url
+                and (self.llm_model or "").lower().startswith("gemini")
+            ):
+                # Without a base URL the key would be sent to api.openai.com.
+                raise ValueError(
+                    "OFFENSIVEX_LLM_MODEL looks like a Gemini model but "
+                    "OFFENSIVEX_LLM_BASE_URL is not set, so requests (and your key) would go "
+                    "to api.openai.com. Set OFFENSIVEX_LLM_BASE_URL="
+                    "https://generativelanguage.googleapis.com/v1beta/openai/"
+                )
+            if missing:
+                raise ValueError(
+                    "OFFENSIVEX_LLM_ENABLED=true but these are not set: "
+                    + ", ".join(f"OFFENSIVEX_LLM_{m}" for m in missing)
+                )
         if self.environment == "production":
             secret = self.secret_key.get_secret_value()
             if secret.lower() in _WEAK_SECRETS or len(secret) < _MIN_SECRET_LENGTH:

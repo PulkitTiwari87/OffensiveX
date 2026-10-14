@@ -43,6 +43,12 @@ def create_assessment(
             "Submit and approve an authorization before creating an assessment."
         )
 
+    if target.entry_point:
+        # Authoritative re-check against the approved, stored rules (the same
+        # check ran at submission, but this is the one that gates a scan): an
+        # entry point outside scope means nothing is created.
+        targets.assert_entry_point_in_scope(target.entry_point, authorization.scope_rules)
+
     assessment = models.Assessment(
         target_id=target.id,
         authorization_id=authorization.id,

@@ -16,7 +16,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
@@ -24,12 +23,12 @@ from offensivex.agents.investigation import run_investigation_agent
 from offensivex.agents.runtime import AgentStep
 from offensivex.core.config import Settings
 from offensivex.db import models
-from offensivex.main import create_app
 from offensivex.observations.normalizer import get_or_create_asset, get_or_create_finding
 from offensivex.services import targets as targets_service
 from offensivex.services.scope import ScopeRuleInput
 from offensivex.tools.adapters.security_header_scan import SecurityHeaderScanAdapter
 from offensivex.tools.registry import ToolRegistry
+from tests.integration.auth_support import authenticated_client
 
 pytestmark = pytest.mark.integration
 
@@ -179,7 +178,7 @@ def test_investigation_confirms_condition_still_present(session: Session) -> Non
             secret_key="test-secret-key-not-used-for-anything-real",
             database_url=session.get_bind().engine.url.render_as_string(hide_password=False),
         )
-        client = TestClient(create_app(api_settings))
+        client = authenticated_client(api_settings)
         response = client.get(f"/api/v1/findings/{finding.id}")
         assert response.status_code == 200
         body = response.json()

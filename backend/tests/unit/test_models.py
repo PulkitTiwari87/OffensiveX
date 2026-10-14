@@ -38,6 +38,10 @@ _EXPECTED_TABLES = {
     "attack_edges",
     "attack_paths",
     "reports",
+    # Added by migration 0004 (ADR-012 / ADR-013): authentication, RBAC, audit.
+    "users",
+    "auth_sessions",
+    "audit_log",
 }
 
 

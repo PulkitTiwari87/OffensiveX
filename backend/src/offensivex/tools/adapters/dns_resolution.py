@@ -17,6 +17,7 @@ import socket
 from collections.abc import Callable
 from typing import Any
 
+from offensivex.core.urls import parse_host
 from offensivex.tools.registry import (
     AdapterMeta,
     ExecutionPlan,
@@ -60,9 +61,14 @@ class DnsResolutionAdapter:
         )
 
     def plan(self, request: dict[str, Any]) -> ExecutionPlan:
-        hostname = request["hostname"]
+        # Same strict validation as URLs (offensivex.core.urls): a malformed or
+        # ambiguous name ("2130706433", "a b", "host\\x00") is refused before the
+        # Scope Guard or the resolver ever sees it. InvalidUrlError is a ValueError.
+        hostname = parse_host(request["hostname"])
         return ExecutionPlan(
-            capability=self.meta.capability, destinations=[hostname], request=request
+            capability=self.meta.capability,
+            destinations=[hostname],
+            request={**request, "hostname": hostname},
         )
 
     def run(self, plan: ExecutionPlan) -> bytes:

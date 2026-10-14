@@ -10,18 +10,17 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from offensivex.attack_graph.engine import build_attack_graph
 from offensivex.core.config import Settings
 from offensivex.db import models
-from offensivex.main import create_app
 from offensivex.observations.normalizer import get_or_create_asset, get_or_create_finding
 from offensivex.risk.engine import RISK_MODEL_VERSION, score_finding
 from offensivex.services import targets as targets_service
 from offensivex.services.scope import ScopeRuleInput
+from tests.integration.auth_support import authenticated_client
 
 pytestmark = pytest.mark.integration
 
@@ -127,7 +126,7 @@ def test_score_rises_once_finding_is_on_the_real_attack_graph(session: Session) 
         secret_key="test-secret-key-not-used-for-anything-real",
         database_url=session.get_bind().engine.url.render_as_string(hide_password=False),
     )
-    client = TestClient(create_app(api_settings))
+    client = authenticated_client(api_settings)
     response = client.get(f"/api/v1/findings/{finding.id}")
     assert response.status_code == 200
     body = response.json()

@@ -2,7 +2,7 @@
 
 > An autonomous, AI-assisted penetration-testing platform for **authorized** security assessments.
 
-**Status: Phase 0 (project foundation) is implemented and verified; every other capability described below is still a design, not a feature.** See [docs/roadmap/current-status.md](docs/roadmap/current-status.md) for the single authoritative "what actually exists" table.
+**Status: the backend is implemented through Phase 14 (reporting), plus authentication/RBAC/audit logging and LLM-provider integration. The dashboard, CLI and cloud security are still designs. No real LLM has been run against the agents yet — see below.** See [docs/roadmap/current-status.md](docs/roadmap/current-status.md) for the single authoritative "what actually exists" table.
 
 ## What OffensiveX is
 
@@ -35,8 +35,10 @@ Python (backend, agent runtime), PostgreSQL (all persistent state), React + Type
 | Area | Status |
 |---|---|
 | Documentation | IMPLEMENTED (this tree) |
-| Project foundation (Phase 0) | IMPLEMENTED — app startup, config, logging, error handling, `/healthz`/`/readyz`, DB connectivity + migration mechanism, tests, CI. See below. |
-| Assessment/Agent/Tool API, Database schema, Agents, Tool Registry, Sandbox, CLI, Dashboard, Cloud Security | NOT STARTED |
+| Backend, Phases 0–14 | IMPLEMENTED and verified against real PostgreSQL — domain model, Tool Registry, agents, findings lifecycle, attack graph, risk engine, reports |
+| Authentication, RBAC, audit log | IMPLEMENTED and verified — [docs/security/access-control.md](docs/security/access-control.md) |
+| LLM integration (Anthropic, OpenAI-compatible) | IMPLEMENTED, **not yet verified against a real model** — [docs/architecture/llm-integration.md](docs/architecture/llm-integration.md) |
+| Dashboard, CLI, Cloud Security | NOT STARTED |
 
 See [docs/roadmap/current-status.md](docs/roadmap/current-status.md) for the full table and known gaps.
 
@@ -58,6 +60,25 @@ uvicorn offensivex.main:app --reload
 ```
 
 With a running Docker daemon: `cp .env.example .env`, then `docker compose up -d postgres`, then `alembic upgrade head` and `pytest -m integration` from `backend/` to exercise the database layer for real. **Verified**: the full stack (API container + Postgres) has been built, run, and tested end-to-end — `27/27` tests pass against a real database, and the API container runs as a confirmed non-root user. See [docs/deployment/local-development.md](docs/deployment/local-development.md) for the full picture.
+
+### First run: create an admin, optionally enable the LLM
+
+There is **no default account**. With the database migrated (`alembic upgrade head`):
+
+```bash
+python -m offensivex.admin create-user --username <you> --role admin   # prompts for a password
+uvicorn offensivex.main:app
+```
+
+Log in with `POST /api/v1/auth/login` (cookie session + `X-CSRF-Token`; see
+[docs/interfaces/api.md](docs/interfaces/api.md)). The LLM is **off** unless you set
+`OFFENSIVEX_LLM_ENABLED=true` plus `OFFENSIVEX_LLM_PROVIDER`, `_MODEL` and `_API_KEY` in your
+own environment (never commit them; see [.env.example](.env.example)). Then:
+
+```bash
+pytest -m real_llm tests/integration/test_real_llm.py     # opt-in; costs money
+python -m offensivex.admin run-assessment --assessment-id <uuid> --report
+```
 
 ## Documentation
 

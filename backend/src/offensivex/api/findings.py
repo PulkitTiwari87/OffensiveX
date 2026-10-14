@@ -9,8 +9,9 @@ route) — a `Finding` plus its `Evidence` — and
 override; restricted to `confirmed`/`rejected` — the only transition this
 route exists for, per docs/data/findings.md).
 
-Known gap, same as `services.findings`: no auth/RBAC restricts this to
-the `analyst` role yet (ADR-013) — see that module's docstring.
+Access control: reads need `data:read`; the status override needs
+`findings:override` (analyst, admin) and is audited with the actor and the
+optional reason.
 """
 
 from __future__ import annotations
@@ -19,15 +20,23 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from offensivex.api.deps import get_db_session
+from offensivex.api.deps import get_db_session, get_request_id, require_permission
+from offensivex.auth.permissions import Permission
+from offensivex.auth.principal import Principal
 from offensivex.db import models
+from offensivex.services import audit
 from offensivex.services import findings as findings_service
 
-router = APIRouter(prefix="/assessments/{assessment_id}/findings", tags=["findings"])
+_read = Depends(require_permission(Permission.DATA_READ))
+_Override = Annotated[Principal, Depends(require_permission(Permission.FINDINGS_OVERRIDE))]
+
+router = APIRouter(
+    prefix="/assessments/{assessment_id}/findings", tags=["findings"], dependencies=[_read]
+)
 detail_router = APIRouter(prefix="/findings", tags=["findings"])
 
 
@@ -70,7 +79,7 @@ def list_findings(
     return findings_service.list_findings(session, assessment_id=assessment_id, status=status)
 
 
-@detail_router.get("/{finding_id}", response_model=FindingDetailResponse)
+@detail_router.get("/{finding_id}", response_model=FindingDetailResponse, dependencies=[_read])
 def get_finding(
     finding_id: UUID,
     session: Annotated[Session, Depends(get_db_session)],
@@ -80,14 +89,30 @@ def get_finding(
 
 class FindingStatusOverrideRequest(BaseModel):
     status: Literal["confirmed", "rejected"]
+    # "who, when, why" (ADR-013 / docs/data/findings.md) — the audit row
+    # supplies who and when; this supplies why.
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 @detail_router.patch("/{finding_id}/status", response_model=FindingDetailResponse)
 def override_finding_status(
     finding_id: UUID,
     body: FindingStatusOverrideRequest,
+    request: Request,
+    actor: _Override,
     session: Annotated[Session, Depends(get_db_session)],
 ) -> models.Finding:
-    return findings_service.override_finding_status(
+    previous = findings_service.get_finding(session, finding_id).status
+    finding = findings_service.override_finding_status(
         session, finding_id=finding_id, new_status=models.FindingStatus(body.status)
     )
+    audit.record(
+        session,
+        action="finding.status_override",
+        actor=actor,
+        target_type="finding",
+        target_id=finding.id,
+        request_id=get_request_id(request),
+        details={"from": previous.value, "to": finding.status.value, "reason": body.reason},
+    )
+    return finding

@@ -32,7 +32,7 @@ def _data(**overrides: Any) -> dict[str, Any]:
         "attack_surface": [],
         "findings": [],
         "confirmed_vulnerabilities": [],
-        "evidence": [{"id": "e1", "kind": "validation_result", "excerpt": "x"}],
+        "evidence": [{"id": "e1", "finding_id": "f1", "kind": "validation_result", "excerpt": "x"}],
         "attack_paths": [],
         "risk_analysis": {"band_counts": {"high": 0}},
         "remediation": [],

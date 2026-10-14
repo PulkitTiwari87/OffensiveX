@@ -16,13 +16,18 @@ dependencies = [
   "psycopg[binary]>=3.2,<4.0",
   "alembic>=1.14,<2.0",
   "structlog>=24.4,<25.0",
+  # ADR-012: argon2id password hashing.
+  "argon2-cffi>=23.1,<26",
+  # LLM providers (offensivex.llm.providers): the official Anthropic SDK, and
+  # httpx for the OpenAI-compatible chat-completions provider.
+  "anthropic>=0.40,<1.0",
+  "httpx>=0.27,<1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3,<9.0",
   "pytest-cov>=6.0,<7.0",
-  "httpx>=0.27,<1.0",
   "ruff>=0.7,<1.0",
   "mypy>=1.13,<2.0",
 ]
@@ -33,8 +38,12 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Real-LLM tests cost money: never part of a default run. `pytest -m real_llm`
+# (a later -m wins over this one) opts in.
+addopts = "-m 'not real_llm'"
 markers = [
   "integration: requires a real PostgreSQL instance (see docker-compose.yml)",
+  "real_llm: opt-in; calls a real LLM provider (needs OFFENSIVEX_LLM_* configured, costs money)",
 ]
 
 [tool.ruff]

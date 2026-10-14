@@ -10,12 +10,13 @@ docs/agents/recon-agent.md's toolset, trimmed to the MVP recon surface
 recon (port/service discovery, subdomain enumeration) is additive, not
 blocking, per that same MVP definition.
 
-**No concrete LLM provider is wired** (see docs/roadmap/current-status.md
-Phase 5/6 sections) — `run_recon_agent()` works with any object satisfying
-`offensivex.llm.base.LLMProvider`, including a scripted test double, which
-is the only kind exercised so far. This module's framework-and-
-normalization mechanics are genuinely proven; a real agent making a real
-LLM-driven recon decision is not, pending that provider.
+`run_recon_agent()` works with any `offensivex.llm.base.LLMProvider`: a
+scripted double in tests, a real model in production. The model decides
+*which* in-scope hostnames/URLs to resolve and probe and in what order, from
+the authorized scope given in its prompt; it cannot widen that scope — the
+Scope Guard refuses anything outside it regardless of what the model asks
+for — and it never writes rows: the deterministic normalizers below turn tool
+results into Asset/Observation rows.
 """
 
 from __future__ import annotations
@@ -49,7 +50,9 @@ RECON_AGENT_DEFINITION = AgentDefinition(
         "You are the Recon Agent for an authorized security assessment "
         "(docs/agents/recon-agent.md). Map the in-scope attack surface "
         "using only the capabilities you have been given: dns_resolution "
-        "and http_probe. Sequence your work based on what you learn — "
+        "and http_probe. If the assessment context gives an entry_point URL, "
+        "start there and use its exact scheme, host and port. Sequence your "
+        "work based on what you learn — "
         "e.g. resolve a host before probing HTTP on it. You are strictly "
         "read-only and must never request a capability outside your "
         "toolset. When you have mapped what is achievable, finish with a "
@@ -57,6 +60,10 @@ RECON_AGENT_DEFINITION = AgentDefinition(
     ),
     output_schema=ReconAgentOutput,
     max_turns=20,
+    capability_requests={
+        "dns_resolution": '{"hostname": "<an in-scope hostname>"}',
+        "http_probe": '{"url": "<http(s) URL on an in-scope host; start from entry_point>"}',
+    },
 )
 
 
@@ -131,6 +138,7 @@ def run_recon_agent(
     def on_tool_result(capability: str, request: dict[str, Any], result: ParsedResult) -> None:
         normalizer.normalize(session, assessment, capability, request, result)
 
+    rules = assessment.authorization.scope_rules
     agent_session = AgentSession(
         session,
         definition=RECON_AGENT_DEFINITION,
@@ -139,5 +147,20 @@ def run_recon_agent(
         assessment=assessment,
         agent_run=agent_run,
         on_tool_result=on_tool_result,
+        task_context={
+            "target": assessment.target.name,
+            # The operator-configured, validated starting URL (None for targets
+            # that predate the field). Exact scheme/host/port to begin with —
+            # never infer a port from the target name. It grants nothing: the
+            # Scope Guard still checks every call against the scope below.
+            "entry_point": assessment.target.entry_point,
+            "in_scope": [
+                {"type": r.rule_type, "pattern": r.pattern} for r in rules if not r.is_exclusion
+            ],
+            "excluded": [
+                {"type": r.rule_type, "pattern": r.pattern} for r in rules if r.is_exclusion
+            ],
+            "scan_mode": assessment.scan_mode.value,
+        },
     )
     return agent_session.run()

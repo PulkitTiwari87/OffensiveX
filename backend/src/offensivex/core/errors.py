@@ -44,6 +44,25 @@ class NotFoundError(OffensiveXError):
     title = "Not found"
 
 
+class AuthenticationError(OffensiveXError):
+    """401: no valid session. Deliberately uninformative about *why*."""
+
+    status_code = status.HTTP_401_UNAUTHORIZED
+    title = "Authentication required"
+
+
+class PermissionDeniedError(OffensiveXError):
+    """403: authenticated, but not allowed."""
+
+    status_code = status.HTTP_403_FORBIDDEN
+    title = "Forbidden"
+
+
+class TooManyRequestsError(OffensiveXError):
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    title = "Too many requests"
+
+
 class ServiceUnavailableError(OffensiveXError):
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     title = "Service unavailable"
@@ -84,13 +103,16 @@ async def offensivex_error_handler(request: Request, exc: Exception) -> JSONResp
 
 async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RequestValidationError)
-    log.info("request.validation_error", errors=exc.errors())
+    # Only where/what/why — never pydantic's `input`/`ctx`, which echo the
+    # submitted value (a password, for the login and user-create bodies).
+    errors = [{key: error.get(key) for key in ("loc", "msg", "type")} for error in exc.errors()]
+    log.info("request.validation_error", errors=errors)
     return _problem_response(
         request=request,
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         title="Validation error",
         detail="The request did not pass validation.",
-        extra={"errors": exc.errors()},
+        extra={"errors": errors},
     )
 
 

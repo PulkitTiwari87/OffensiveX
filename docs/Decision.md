@@ -348,8 +348,10 @@ Session lookup per request (indexed; negligible). Cookie auth needs CSRF handlin
 ## Consequences
 Phase 2 implements auth + CSRF; Phase 16 adds rate limiting/lockout. Cookie flags relax only in explicit `development` mode.
 
+**Implemented (Track A, after Phase 14):** exactly as decided — argon2id (`argon2-cffi`), Postgres sessions storing only the SHA-256 of the token, `HttpOnly; SameSite=Strict` cookie (`Secure` outside development/test), a per-session synchronizer CSRF token in `X-CSRF-Token`, first admin via `python -m offensivex.admin create-user`. Two deliberate deviations/additions: (1) a small login throttle (5 failures/username/15 min → 429, counted from the audit log) was pulled forward from Phase 16 because shipping password login with no brute-force limit was not acceptable; Phase 16 still owns IP-level rate limiting. (2) Wildcard CORS origins are rejected at startup because the API is cookie-authenticated. See [security/access-control.md](security/access-control.md).
+
 ## Status
-PROPOSED
+ACCEPTED
 
 ---
 
@@ -374,8 +376,10 @@ Roles are coarse. Per-target ownership/ACLs are `FUTURE`.
 ## Consequences
 An authorization-matrix test enumerates every endpoint × role (Phase 16). The target-authorization gate sits in the scan service **and** the execution engine (defense in depth).
 
+**Implemented (Track A):** the matrix test ships now (`tests/integration/test_auth_rbac_audit.py`), not in Phase 16: every route is classified, an inventory test fails on any unclassified route, and each role is exercised against each. The model's output is never an authorization input — it is not given the user's identity or role, and tool calls are validated against the agent's toolset and the Scope Guard independently. Self-approval is tracked via `authorizations.submitted_by_id`/`decided_by_id`.
+
 ## Status
-PROPOSED
+ACCEPTED
 
 ---
 
@@ -580,6 +584,60 @@ More moving parts than a fixed pipeline (seven agent definitions instead of one 
 - `docs/PRD.md`, `docs/Architecture.md`, `docs/Design.md`, `docs/Plan.md`, `docs/Phases.md` marked superseded in place; their content is replaced by `docs/architecture/`, `docs/agents/`, `docs/security/`, `docs/data/`, `docs/tools/`, `docs/interfaces/`, `docs/reporting/`, `docs/deployment/`, `docs/roadmap/`.
 - Validation (any state-changing/active-confirmation action) becomes an explicit, narrowly-scoped, opt-in agent capability (`agents/validation-agent.md`, `security/validation.md`) rather than something the original design excluded from MVP entirely — this is a scope **addition**, made consciously and bounded by the same non-destructive-by-default rule as everything else.
 - `docs/roadmap/roadmap.md` replaces `docs/Phases.md`'s phase order with one built around the agent/tool-registry/observation model, with cloud security and CI/CD pushed later and MCP/external integrations deliberately last (P19 as of the implementation-blueprint renumbering; P17 at the time this ADR was written).
+
+## Status
+ACCEPTED
+
+---
+
+# ADR-022
+
+## Decision
+Security-relevant actions are recorded in a persistent, **append-only `audit_log` table**. A successful sensitive action writes its audit row **in the same transaction** as the change (`audit.record`); a denial or failure writes its row in a **separate, immediately-committed transaction** (`audit.record_independent`) so it survives the request's rollback. Append-only is enforced by the database (a trigger rejects `UPDATE`, `DELETE` and `TRUNCATE`), not just by the absence of an API route. `details` is scrubbed of secret-looking keys and truncated.
+
+## Context
+ADR-013 and `data/findings.md` require "audited" analyst overrides and scope approvals; until now the only trail was `AgentRun`/`ToolExecution`/`Evidence` rows, which say nothing about *who* did an administrative action or who was *refused*.
+
+## Alternatives
+- A hash-chained log (tamper-evident, like the original design's idea): stronger against a malicious DBA, but a hash chain serialises writers and needs a verifier; deferred. The trigger protects against the application and API users, which is the realistic threat for this stage.
+- Audit rows only for successes: loses exactly the events (denials, failed logins) an investigator wants.
+- Writing denial rows in the request transaction: they would roll back with the failed request.
+
+## Reasoning
+Same-transaction success rows can never describe a change that did not happen, nor miss one that did. Independent denial rows cannot be erased by the failure they record.
+
+## Trade-offs
+A database owner/superuser can still drop the trigger — the control is against the application, not against the DBA. Failed-login rows are written for unknown usernames too (needed for the throttle) and are therefore attacker-fillable; a retention policy is future work.
+
+## Consequences
+Covered events: `auth.login` (success/failure), `auth.login.throttled`, `auth.logout`, `authz.denied`, `authz.csrf_rejected`, `target.create`, `authorization.submit/approve/reject`, `assessment.create/cancel`, `finding.status_override` (with reason), `report.generate`, `user.create/update/set_password`, `pipeline.run`. Admin-only read API `GET /api/v1/audit-log`. See [security/access-control.md](security/access-control.md).
+
+## Status
+ACCEPTED
+
+---
+
+# ADR-023
+
+## Decision
+LLM access goes through the `LLMProvider` protocol (`generate_structured(prompt, schema) -> schema instance`); vendor code lives only in `llm/providers/`. A shared base (`llm/structured.py`) gives every provider the same validation, **bounded retries** (1 + `LLM_MAX_RETRIES` attempts, capped backoff, permanent errors not retried), prompt-size and output-token caps, and secret-free logging. Two providers ship: **Anthropic** (official SDK, forced tool use for structured output) and an **OpenAI-compatible** one (httpx; covers OpenAI, Gemini's compatibility endpoint, and local servers). Configuration uses the project's existing `OFFENSIVEX_LLM_*` variables. **The model proposes; deterministic code disposes:** it never writes rows, never sets a status the evidence contradicts, and is never an input to authorization.
+
+## Context
+Agents had been proven only against scripted doubles; ADR-010/021 left the vendor open. The risk of a real model is not that it is wrong but that a wrong or manipulated answer silently becomes a finding, a verdict or a report claim.
+
+## Alternatives
+- One vendor SDK called from agents directly: couples agents to a vendor and scatters retry/validation logic.
+- A framework such as LangChain: a large dependency for one method call.
+- Letting the model's `still_present`/`outcome` stand on its own: a model that is wrong or prompt-injected would move findings to CONFIRMED/REJECTED. Rejected — the conclusion must agree with what the tool observed or the run fails.
+
+## Reasoning
+The existing runtime already had the right seam (`AgentSession` + a typed `AgentStep`); the work was making the prompt carry real context, fencing untrusted data, cross-checking conclusions against tool results, and making failures loud. No silent fallback exists: an LLM failure fails the agent run (visible in `agent_runs`) or marks the report's `ai_summary` as `failed`.
+
+## Trade-offs
+A strict cross-check turns some model mistakes into failed runs instead of quietly "reasonable" results — intended. Prompt-injection defences (fencing, closing-tag neutralisation, size clipping) reduce but cannot eliminate the risk; the hard guarantees are structural (toolset, Scope Guard, deterministic normalizers, state machine, cross-checks), not prompt wording. Neither provider has been exercised against a real endpoint in CI; see `real_llm` tests.
+
+## Consequences
+Config validation fails at startup if the LLM is enabled but incomplete. Tests never call a real model (an autouse fixture forces it off); `pytest -m real_llm` is the explicit opt-in. See [architecture/llm-integration.md](architecture/llm-integration.md).
 
 ## Status
 ACCEPTED

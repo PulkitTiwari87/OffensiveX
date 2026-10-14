@@ -11,18 +11,17 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from offensivex.core.config import Settings
 from offensivex.db import models
 from offensivex.db.transitions import InvalidTransitionError
-from offensivex.main import create_app
 from offensivex.observations.normalizer import get_or_create_asset, get_or_create_finding
 from offensivex.services import targets as targets_service
 from offensivex.services.findings import mark_finding_reported, override_finding_status
 from offensivex.services.scope import ScopeRuleInput
+from tests.integration.auth_support import authenticated_client
 
 pytestmark = pytest.mark.integration
 
@@ -231,7 +230,7 @@ def test_status_filter_via_api(session: Session) -> None:
         secret_key="test-secret-key-not-used-for-anything-real",
         database_url=session.get_bind().engine.url.render_as_string(hide_password=False),
     )
-    client = TestClient(create_app(api_settings))
+    client = authenticated_client(api_settings)
 
     response_all = client.get(f"/api/v1/assessments/{assessment.id}/findings")
     assert len(response_all.json()) == 2

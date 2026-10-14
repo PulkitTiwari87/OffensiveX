@@ -11,6 +11,11 @@ validation gate (Phase 3) enforces the identical rule independently, at
 the capability level — defense in depth, not a single point of failure
 for this specific safety property.
 
+The model interprets the one registered check, but CONFIRMED/REJECTED must
+agree with what that check observed (confirmed only if the condition
+holds, rejected only if it does not); a contradicting or evidence-free
+verdict fails the run rather than moving the finding.
+
 This is the *only* path, besides an explicit analyst override
 (`PATCH /findings/{id}/status`, docs/interfaces/api.md), that may ever
 set `Finding.status` to `CONFIRMED` or `REJECTED` — see
@@ -22,10 +27,11 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from offensivex.agents.definition import AgentDefinition
-from offensivex.agents.runtime import AgentRunResult, AgentSession
+from offensivex.agents.runtime import AgentOutputContractError, AgentRunResult, AgentSession
 from offensivex.core.errors import OffensiveXError
 from offensivex.db import models
 from offensivex.db.transitions import assert_valid_transition
@@ -58,6 +64,11 @@ VALIDATION_AGENT_DEFINITION = AgentDefinition(
     ),
     output_schema=ValidationAgentOutput,
     max_turns=5,
+    capability_requests={
+        "security_header_validation_check": (
+            '{"url": "<the finding\'s endpoint URL, exactly as given>"}'
+        ),
+    },
 )
 
 
@@ -84,9 +95,42 @@ def run_validation_agent(
             "from INVESTIGATING)."
         )
 
+    asset = session.get(models.Asset, finding.asset_id)
+    endpoint_url = asset.canonical_key if asset else None
+    prior_evidence = list(
+        session.scalars(
+            select(models.Evidence.excerpt)
+            .where(models.Evidence.finding_id == finding.id)
+            .limit(10)
+        )
+    )
+    observed: list[bool] = []  # did the condition hold, per check run
+
+    def request_guard(capability: str, request: dict[str, Any]) -> str | None:
+        if request.get("url") != endpoint_url:
+            return f"validate only this finding's own endpoint, {endpoint_url!r}"
+        return None
+
+    def validate_output(output: BaseModel) -> None:
+        verdict: str = output.outcome  # type: ignore[attr-defined]
+        if verdict == "unresolved":
+            return  # never forces a status change, so it needs no corroboration
+        if not observed:
+            raise AgentOutputContractError(
+                f"Validation reported {verdict!r} without running the validation check."
+            )
+        holds = observed[-1]
+        if (verdict == "confirmed") != holds:
+            raise AgentOutputContractError(
+                f"Validation reported {verdict!r} but the check observed the condition "
+                f"{'holds' if holds else 'does not hold'}; refusing to record a verdict "
+                "the evidence contradicts."
+            )
+
     def on_tool_result(capability: str, request: dict[str, Any], result: ParsedResult) -> None:
         missing = result.data.get("missing_headers", [])
         condition_holds = finding.affected_component in missing
+        observed.append(condition_holds)
         session.add(
             models.Evidence(
                 finding_id=finding.id,
@@ -109,6 +153,15 @@ def run_validation_agent(
         assessment=assessment,
         agent_run=agent_run,
         on_tool_result=on_tool_result,
+        task_context={
+            "finding_id": str(finding.id),
+            "title": finding.title,
+            "check": finding.affected_component,
+            "status": finding.status.value,
+        },
+        untrusted_context={"endpoint_url": endpoint_url, "prior_evidence": prior_evidence},
+        validate_output=validate_output,
+        request_guard=request_guard,
     )
     result = agent_session.run()
 

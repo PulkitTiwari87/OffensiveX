@@ -32,8 +32,8 @@ from __future__ import annotations
 import socket
 from ssl import create_default_context
 from typing import Any
-from urllib.parse import urlsplit
 
+from offensivex.core.urls import parse_http_url
 from offensivex.tools.adapters.dns_resolution import Resolver
 from offensivex.tools.adapters.dns_resolution import _default_resolver as _resolve_hostname
 from offensivex.tools.registry import (
@@ -79,25 +79,24 @@ class HttpProbeAdapter:
         )
 
     def plan(self, request: dict[str, Any]) -> ExecutionPlan:
-        url = request["url"]
-        parts = urlsplit(url)
-        if parts.scheme not in ("http", "https"):
-            raise ValueError(f"Unsupported URL scheme {parts.scheme!r} (must be http/https).")
-        if not parts.hostname:
-            raise ValueError(f"URL {url!r} has no hostname.")
+        # The one strict parser (offensivex.core.urls): the host that goes into
+        # `destinations` for the Scope Guard is, by construction, the host
+        # `run()` connects to — both come from the same normalized URL, and
+        # ambiguous forms (userinfo, backslashes, 2130706433, ...) are refused
+        # here rather than interpreted. InvalidUrlError is a ValueError.
+        parsed = parse_http_url(request["url"], allow_query=True)
         return ExecutionPlan(
-            capability=self.meta.capability, destinations=[parts.hostname], request=request
+            capability=self.meta.capability,
+            destinations=[parsed.host],
+            request={**request, "url": parsed.url},
         )
 
     def run(self, plan: ExecutionPlan) -> bytes:
-        url = plan.request["url"]
-        parts = urlsplit(url)
-        hostname = parts.hostname
-        assert hostname is not None  # guaranteed by plan()
-        port = parts.port or (443 if parts.scheme == "https" else 80)
-        path = parts.path or "/"
-        if parts.query:
-            path = f"{path}?{parts.query}"
+        parsed = parse_http_url(plan.request["url"], allow_query=True)
+        hostname = parsed.host
+        port = parsed.port
+        scheme = parsed.scheme
+        path = parsed.path if not parsed.query else f"{parsed.path}?{parsed.query}"
 
         addresses = self._resolver(hostname)
         if not addresses:
@@ -127,7 +126,7 @@ class HttpProbeAdapter:
 
         try:
             sock: socket.socket
-            if parts.scheme == "https":
+            if scheme == "https":
                 context = create_default_context()
                 sock = context.wrap_socket(raw_sock, server_hostname=hostname)
             else:
@@ -135,7 +134,7 @@ class HttpProbeAdapter:
 
             request_bytes = (
                 f"GET {path} HTTP/1.1\r\n"
-                f"Host: {hostname}\r\n"
+                f"Host: {parsed.host_header}\r\n"
                 "Connection: close\r\n"
                 "User-Agent: OffensiveX-ReconAgent/0.1\r\n"
                 "\r\n"

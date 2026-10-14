@@ -99,6 +99,16 @@ class ScopeViolationError(ToolRegistryError):
     title = "Scope violation"
 
 
+class ToolRunError(ToolRegistryError):
+    """The tool was allowed and started but failed (host unreachable, port
+    closed, timeout). Unlike the refusals above this is an *observation*: an
+    agent is told about it and may continue; the `ToolExecution` row is marked
+    KILLED and keeps the audit trail."""
+
+    status_code = 502
+    title = "Tool execution failed"
+
+
 @dataclass(frozen=True)
 class AdapterMeta:
     name: str
@@ -221,11 +231,11 @@ class ToolRegistry:
 
         try:
             raw_artifact = adapter.run(plan)
-        except Exception:
+        except Exception as exc:
             tool_execution.status = models.ToolExecutionStatus.KILLED
             tool_execution.finished_at = datetime.now(UTC)
             session.flush()
-            raise
+            raise ToolRunError(f"{capability} failed: {type(exc).__name__}: {exc}") from exc
 
         tool_execution.artifact_hash = hashlib.sha256(raw_artifact).hexdigest()
         tool_execution.status = models.ToolExecutionStatus.COMPLETED

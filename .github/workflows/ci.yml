@@ -38,16 +38,28 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
+      - name: Format check (ruff)
+        run: ruff format --check .
+
       - name: Type check (mypy)
         run: mypy src
 
-      - name: Run migrations against the CI database
+      # Fresh database: proves the whole chain applies, that the models and the
+      # migrations agree (`alembic check` fails on drift), and that the
+      # downgrade path works and re-upgrades cleanly.
+      - name: Migrations - upgrade, drift check, downgrade, re-upgrade
         env:
           OFFENSIVEX_DATABASE_URL: postgresql+psycopg://offensivex:offensivex@localhost:5433/offensivex
-        run: alembic upgrade head
+        run: |
+          alembic upgrade head
+          alembic check
+          alembic downgrade base
+          alembic upgrade head
 
       - name: Unit + integration tests
         env:
           OFFENSIVEX_DATABASE_URL: postgresql+psycopg://offensivex:offensivex@localhost:5433/offensivex
           OFFENSIVEX_TEST_DATABASE_URL: postgresql+psycopg://offensivex:offensivex@localhost:5433/offensivex
+        # Real-LLM tests are excluded by pytest's addopts and never run in CI;
+        # no LLM credentials are configured here.
         run: pytest --cov=src/offensivex --cov-report=term-missing

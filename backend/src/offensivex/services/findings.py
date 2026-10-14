@@ -6,13 +6,9 @@ docs/data/findings.md: "the Validation Agent's checked outcome, or an
 explicit, audited analyst override" are the only two ways a finding may
 reach `CONFIRMED`/`REJECTED`).
 
-Known gap, documented rather than silently skipped: ADR-013 specifies
-this override requires the `analyst` role and should be audit-logged
-(who, when, why). No authentication/RBAC layer exists yet (Phase 2's
-tracked gap) and no `AuditLogEntry` table exists (an unscheduled
-capability — see docs/roadmap/current-status.md). This function enforces
-only the finding state machine, not who may call it or a durable audit
-trail of the call.
+Who may call the override, and the audit row for it, are enforced at the
+API boundary (`api.findings`: `findings:override` + `audit.record`); this
+function enforces only the finding state machine.
 """
 
 from __future__ import annotations

@@ -16,7 +16,11 @@ One `AgentRun` handles exactly one `Finding`, per
 docs/agents/orchestrator.md point 4 ("one AgentRun is normally one
 finding for Investigation/Validation").
 
-Same "no concrete LLM provider wired" caveat as every agent so far.
+The model drives the re-check and writes the notes, but the *conclusion* is
+cross-checked against what the tool actually observed: it must have run the
+check on this finding's own endpoint, and its `still_present` must agree
+with the observation, or the run fails (visibly) instead of recording a
+model-invented conclusion.
 """
 
 from __future__ import annotations
@@ -24,10 +28,11 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from offensivex.agents.definition import AgentDefinition
-from offensivex.agents.runtime import AgentRunResult, AgentSession
+from offensivex.agents.runtime import AgentOutputContractError, AgentRunResult, AgentSession
 from offensivex.db import models
 from offensivex.db.transitions import assert_valid_transition
 from offensivex.llm.base import LLMProvider
@@ -53,6 +58,9 @@ INVESTIGATION_AGENT_DEFINITION = AgentDefinition(
     ),
     output_schema=InvestigationAgentOutput,
     max_turns=5,
+    capability_requests={
+        "security_header_scan": '{"url": "<the finding\'s endpoint URL, exactly as given>"}',
+    },
 )
 
 
@@ -78,9 +86,39 @@ def run_investigation_agent(
     finding.status = models.FindingStatus.INVESTIGATING
     session.flush()
 
+    asset = session.get(models.Asset, finding.asset_id)
+    endpoint_url = asset.canonical_key if asset else None
+    prior_evidence = list(
+        session.scalars(
+            select(models.Evidence.excerpt)
+            .where(models.Evidence.finding_id == finding.id)
+            .limit(10)
+        )
+    )
+    observed: list[bool] = []  # what the tool actually saw, per check run
+
+    def request_guard(capability: str, request: dict[str, Any]) -> str | None:
+        if request.get("url") != endpoint_url:
+            return f"re-check only this finding's own endpoint, {endpoint_url!r}"
+        return None
+
+    def validate_output(output: BaseModel) -> None:
+        if not observed:
+            raise AgentOutputContractError(
+                "Investigation finished without running the re-check, so there is no "
+                "evidence to base a conclusion on."
+            )
+        claimed: bool = output.still_present  # type: ignore[attr-defined]
+        if claimed != observed[-1]:
+            raise AgentOutputContractError(
+                f"Investigation reported still_present={claimed} but the re-check observed "
+                f"{observed[-1]}; refusing to record a conclusion the evidence contradicts."
+            )
+
     def on_tool_result(capability: str, request: dict[str, Any], result: ParsedResult) -> None:
         missing = result.data.get("missing_headers", [])
         still_present = finding.affected_component in missing
+        observed.append(still_present)
         session.add(
             models.Evidence(
                 finding_id=finding.id,
@@ -103,6 +141,16 @@ def run_investigation_agent(
         assessment=assessment,
         agent_run=agent_run,
         on_tool_result=on_tool_result,
+        task_context={
+            "finding_id": str(finding.id),
+            "title": finding.title,
+            "check": finding.affected_component,
+            "source": finding.source,
+            "status": finding.status.value,
+        },
+        untrusted_context={"endpoint_url": endpoint_url, "prior_evidence": prior_evidence},
+        validate_output=validate_output,
+        request_guard=request_guard,
     )
     result = agent_session.run()
 

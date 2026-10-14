@@ -30,7 +30,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -230,6 +230,21 @@ class ReportFormat(enum.StrEnum):
     MARKDOWN = "markdown"
 
 
+class UserRole(enum.StrEnum):
+    """ADR-013's three coarse roles. Which permissions each role holds
+    lives in `offensivex.auth.permissions`, not here."""
+
+    ADMIN = "admin"
+    ANALYST = "analyst"
+    VIEWER = "viewer"
+
+
+class AuditOutcome(enum.StrEnum):
+    SUCCESS = "success"
+    DENIED = "denied"  # an authorization decision said no
+    FAILURE = "failure"  # e.g. a failed login
+
+
 def _pg_enum(enum_cls: type[enum.StrEnum], name: str) -> SAEnum:
     """A Postgres-native ENUM column for a `StrEnum`, storing/reading its
     *value* (e.g. "medium") rather than SQLAlchemy's default of the
@@ -258,10 +273,22 @@ class Target(Base):
     """What may be assessed, and under what scope/authorization."""
 
     __tablename__ = "targets"
+    __table_args__ = (
+        CheckConstraint(
+            "entry_point IS NULL OR entry_point LIKE 'http://%' OR entry_point LIKE 'https://%'",
+            name="ck_targets_entry_point_http",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     type: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Where assessment starts: a normalized http(s) URL (scheme, host, explicit
+    # non-default port, path; never userinfo, query or fragment — see
+    # offensivex.core.urls). Nullable for targets created before this field
+    # existed; Recon then only knows hostnames. It is a starting point, not
+    # permission: the Authorization's scope rules still decide what may be touched.
+    entry_point: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     default_exposure: Mapped[ImpactLevel] = mapped_column(
         _IMPACT_LEVEL, nullable=False, default=ImpactLevel.MEDIUM
     )
@@ -300,6 +327,11 @@ class Authorization(Base):
         nullable=False,
         default=AuthorizationStatus.PENDING,
     )
+    # Who submitted this version, and who approved or rejected it (ADR-013's
+    # self-approval rule). Nullable: rows created by internal/test code paths
+    # have no human actor.
+    submitted_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    decided_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
@@ -671,3 +703,78 @@ class Report(Base):
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# --- Authentication, RBAC, audit (ADR-012 / ADR-013) -------------------------
+
+
+class User(Base):
+    """A local account. Never deleted (audit rows reference it) — an account
+    is retired by setting `is_active = False`."""
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    username: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    # argon2id encoded hash (includes salt + parameters). Never the password.
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[UserRole] = mapped_column(_pg_enum(UserRole, "user_role"), nullable=False)
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class AuthSession(Base):
+    """A server-side login session. Only the SHA-256 of the session token is
+    stored, so a database read cannot be replayed as a cookie."""
+
+    __tablename__ = "auth_sessions"
+    __table_args__ = (Index("ix_auth_sessions_user_id", "user_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    # Synchronizer CSRF token (ADR-012): returned to the client at login and
+    # required in `X-CSRF-Token` on every state-changing request. Useless
+    # without the HttpOnly session cookie, so it is stored as-is.
+    csrf_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped[User] = relationship()
+
+
+class AuditLogEntry(Base):
+    """Append-only record of a security-relevant action. A Postgres trigger
+    (migration 0004) rejects UPDATE/DELETE/TRUNCATE, so history cannot be
+    rewritten through the application. `details` must never hold secrets —
+    see `offensivex.services.audit`."""
+
+    __tablename__ = "audit_log"
+    __table_args__ = (
+        Index("ix_audit_log_occurred_at", "occurred_at"),
+        Index("ix_audit_log_action", "action"),
+        Index("ix_audit_log_actor_user_id", "actor_user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # Nullable: a failed login has no authenticated actor. No ON DELETE
+    # action (users are never deleted), so the audit trail can't be edited
+    # indirectly through a user delete.
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    actor_username: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    outcome: Mapped[AuditOutcome] = mapped_column(
+        _pg_enum(AuditOutcome, "audit_outcome"), nullable=False
+    )
+    target_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

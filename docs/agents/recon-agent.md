@@ -10,6 +10,7 @@ Map the in-scope attack surface: hosts, open ports, running services, web techno
 ## Inputs
 
 - The assessment's scope snapshot (what is in/out of scope — enforced independently by the Scope Guard regardless of what the agent "decides").
+- The target's **entry point** (`targets.entry_point`, optional): a validated, normalized http(s) URL giving the exact scheme, host and port to start from. It is a starting point, never permission — it must itself be covered by the authorization's scope, and every tool call is still checked against that scope. Recon never infers a port or URL from the target name; with no entry point it only knows hostnames and tries the default http/https URLs.
 - Prior observations from this assessment (so re-runs/re-scans don't blindly repeat work already done).
 
 ## Tools

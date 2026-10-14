@@ -38,7 +38,9 @@ Windows 11. Python 3.12.6 (`C:\Users\tpulk\AppData\Local\Programs\Python\Python3
 - Candidate tool choices (Nmap, Nuclei, Semgrep, Trivy, Playwright) are not confirmed integrations and may change once actually implemented.
 - The risk-scoring formula's shape is fixed (deterministic, path-aware, versioned, breakdown-explainable); exact weights are not yet finalized.
 - No lab/sandbox AWS or other cloud account has been offered by the owner for verification; cloud security (P17) has no confirmed provider yet.
-- No LLM provider has been chosen/keyed for the agent runtime; `backend/src/offensivex/llm/base.py` defines only the interface shape (Phase 0), per the project owner's explicit instruction to leave the first provider undecided.
+- **LLM:** Anthropic and OpenAI-compatible providers exist behind `llm/base.py` (Track B, ADR-023) and are configured only through `OFFENSIVEX_LLM_*`; the owner supplies the key locally. The OpenAI-compatible provider has been run for real against Gemini (3 `real_llm` tests + one full lab pipeline, 2026-10-14); the Anthropic provider has **never** run against a real endpoint. Real-model evidence is a handful of runs on one small model — don't over-claim. Gemini notes: `gemini-2.5-flash` is 404 for new keys; capacity 503/429s are common; `GET <base_url>/models` lists usable models; a Gemini model with `provider=openai` needs `OFFENSIVEX_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/`. No model is trained and there is no dataset/notebook (the AI layer is an LLM over deterministic engines).
+- **Access control:** local accounts + sessions + RBAC + append-only audit log are implemented (Track A, ADR-012/013/022); there is no default account (create the first admin with `python -m offensivex.admin create-user`). Lessons worth keeping: validation errors must never echo submitted values; any client-supplied header that is stored must be length/charset-bounded; piping text into a Python CLI from Windows PowerShell 5.1 prepends a BOM; PowerShell also mangles inner quotes passed to `curl.exe` (use body files).
+- Test isolation: an autouse fixture forces `OFFENSIVEX_LLM_ENABLED=false` for every test; real-model tests are opt-in (`-m real_llm`).
 
 ## Phase 0 implementation (project foundation)
 
@@ -64,7 +66,7 @@ A full consistency review converted the documentation into an implementation-rea
 
 ## Unresolved questions for the project owner
 
-- Confirm the exact agent-runtime/LLM provider(s) to target first.
+- Which LLM provider/model to run first for real verification (both an Anthropic and an OpenAI-compatible provider are implemented; neither is verified).
 - Confirm whether a lab/sandbox cloud account will be made available for cloud-security verification (Guardrail "VERIFIED" status needs it).
 - Confirm whether MCP/external-integration (P19) should stay last, or move up once a specific external consumer is identified.
 - Confirm the MVP vertical-slice finding class (header/reflection-class recommended in `roadmap/implementation-blueprint.md §10`) before Phase P8 is implemented.

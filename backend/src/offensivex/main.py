@@ -5,22 +5,15 @@ centralized error handling, CORS, health/readiness endpoints. Phase 2 adds
 the first `/api/v1` routes: Targets/Authorizations (offensivex.api.targets)
 and Assessments (offensivex.api.assessments).
 
-Security boundary note, corrected from an earlier draft of this docstring:
-ADR-012/ADR-013 (docs/Decision.md) describe session-based auth and RBAC as
-landing "Phase 2," but that predates the later architecture-to-
-implementation consistency review (docs/roadmap/implementation-blueprint.md),
-whose Phase 2 row (section 11) scopes this phase to Target/Authorization/
-Assessment services and the orchestrator skeleton only — no Auth Service,
-no `User`/`Session` entities. Per that newer, reconciled breakdown (which
-CLAUDE.md section 22's ambiguity-resolution order ranks above an older ADR
-when the two disagree), no route below requires authentication yet. This
-is a tracked gap, not an oversight — see docs/roadmap/current-status.md's
-Phase 2 section. `approve_authorization` in particular is specified
-(ADR-013) to require the `admin` role and is not yet restricted to one.
+Security boundary: every `/api/v1` route requires an authenticated session
+and a declared permission (ADR-012 / ADR-013; see
+docs/security/access-control.md for the route-by-route classification).
+The only public routes are `/healthz`, `/readyz` and `POST /api/v1/auth/login`.
 """
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -32,7 +25,18 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from offensivex.api import assessments, assets, attack_graph, findings, health, reports, targets
+from offensivex.api import (
+    assessments,
+    assets,
+    attack_graph,
+    audit,
+    auth,
+    findings,
+    health,
+    reports,
+    targets,
+    users,
+)
 from offensivex.core.config import Settings, get_settings
 from offensivex.core.errors import (
     OffensiveXError,
@@ -45,8 +49,11 @@ from offensivex.core.errors import (
 from offensivex.core.logging import configure_logging, get_logger
 from offensivex.db.session import create_db_engine, create_session_factory
 from offensivex.db.transitions import InvalidTransitionError
+from offensivex.llm.base import try_get_llm_provider
 
 log = get_logger(__name__)
+
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
 @asynccontextmanager
@@ -65,8 +72,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
 
-    app = FastAPI(title="OffensiveX API", lifespan=_lifespan)
+    # The interactive docs/schema are unauthenticated routes; keep them off in
+    # production so the only public endpoints are health checks and login.
+    docs_enabled = settings.environment != "production"
+    app = FastAPI(
+        title="OffensiveX API",
+        lifespan=_lifespan,
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
+    )
     app.state.settings = settings
+    # None when OFFENSIVEX_LLM_ENABLED is false. A misconfigured provider
+    # raises here, at startup, rather than on the first request.
+    app.state.llm_provider = try_get_llm_provider(settings)
     app.state.db_engine = create_db_engine(settings)
     app.state.session_factory = create_session_factory(app.state.db_engine)
 
@@ -80,7 +99,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):  # type: ignore[no-untyped-def]
-        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        # The id lands in logs and the audit log (varchar(64)), so a client-
+        # supplied value is accepted only if it is short and boring.
+        supplied = request.headers.get("X-Request-ID", "")
+        request_id = supplied if _REQUEST_ID_RE.fullmatch(supplied) else str(uuid.uuid4())
         request.state.request_id = request_id
         start = time.perf_counter()
         with structlog.contextvars.bound_contextvars(request_id=request_id):
@@ -108,6 +130,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Base path /api/v1 (docs/interfaces/api.md). Phase 2 adds the first
     # routes: Targets/Authorizations and Assessments.
     v1_router = APIRouter(prefix="/api/v1")
+    v1_router.include_router(auth.router)
+    v1_router.include_router(users.router)
+    v1_router.include_router(audit.router)
     v1_router.include_router(targets.router)
     v1_router.include_router(assessments.router)
     v1_router.include_router(assets.router)

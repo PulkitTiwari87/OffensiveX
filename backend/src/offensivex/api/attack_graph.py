@@ -13,11 +13,16 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from offensivex.api.deps import get_db_session
+from offensivex.api.deps import get_db_session, require_permission
+from offensivex.auth.permissions import Permission
 from offensivex.db import models
 from offensivex.services import attack_graph as attack_graph_service
 
-router = APIRouter(prefix="/assessments/{assessment_id}/attack-paths", tags=["attack-graph"])
+router = APIRouter(
+    prefix="/assessments/{assessment_id}/attack-paths",
+    tags=["attack-graph"],
+    dependencies=[Depends(require_permission(Permission.DATA_READ))],
+)
 
 
 class AttackPathResponse(BaseModel):

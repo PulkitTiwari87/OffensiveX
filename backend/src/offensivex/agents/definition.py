@@ -10,7 +10,7 @@ docs/agents/recon-agent.md) is Phase 6.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
@@ -27,6 +27,9 @@ class AgentDefinition:
     system_prompt: str
     output_schema: type[BaseModel]
     max_turns: int = 10
+    # capability -> the `request` shape the model must send, shown in its
+    # prompt (a real LLM cannot guess `{"hostname": ...}` vs `{"url": ...}`).
+    capability_requests: dict[str, str] = field(default_factory=dict)
 
 
 class ReconProofOutput(BaseModel):

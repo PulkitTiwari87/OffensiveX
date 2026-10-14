@@ -14,7 +14,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
@@ -22,12 +21,12 @@ from offensivex.agents.runtime import AgentStep
 from offensivex.agents.validation import ValidationNotEnabledError, run_validation_agent
 from offensivex.core.config import Settings
 from offensivex.db import models
-from offensivex.main import create_app
 from offensivex.observations.normalizer import get_or_create_asset, get_or_create_finding
 from offensivex.services import targets as targets_service
 from offensivex.services.scope import ScopeRuleInput
 from offensivex.tools.adapters.security_header_validation import SecurityHeaderValidationCheck
 from offensivex.tools.registry import ToolRegistry, ValidationModeRequiredError
+from tests.integration.auth_support import authenticated_client
 
 pytestmark = pytest.mark.integration
 
@@ -222,7 +221,7 @@ def test_validation_agent_confirms_finding(session: Session) -> None:
             secret_key="test-secret-key-not-used-for-anything-real",
             database_url=session.get_bind().engine.url.render_as_string(hide_password=False),
         )
-        client = TestClient(create_app(api_settings))
+        client = authenticated_client(api_settings)
         response = client.get(f"/api/v1/findings/{finding.id}")
         assert response.json()["status"] == "confirmed"
     finally:
@@ -328,7 +327,7 @@ def test_analyst_override_confirms_a_finding_via_patch(session: Session) -> None
         secret_key="test-secret-key-not-used-for-anything-real",
         database_url=session.get_bind().engine.url.render_as_string(hide_password=False),
     )
-    client = TestClient(create_app(api_settings))
+    client = authenticated_client(api_settings)
     response = client.patch(f"/api/v1/findings/{finding.id}/status", json={"status": "rejected"})
     assert response.status_code == 200
     assert response.json()["status"] == "rejected"
@@ -382,6 +381,6 @@ def test_analyst_override_rejects_invalid_transition(session: Session) -> None:
         secret_key="test-secret-key-not-used-for-anything-real",
         database_url=session.get_bind().engine.url.render_as_string(hide_password=False),
     )
-    client = TestClient(create_app(api_settings))
+    client = authenticated_client(api_settings)
     response = client.patch(f"/api/v1/findings/{finding.id}/status", json={"status": "confirmed"})
     assert response.status_code == 422

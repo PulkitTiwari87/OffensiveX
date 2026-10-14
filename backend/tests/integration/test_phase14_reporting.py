@@ -15,10 +15,10 @@ from sqlalchemy.orm import Session
 
 from offensivex.core.config import Settings
 from offensivex.db import models
-from offensivex.main import create_app
 from offensivex.observations.normalizer import get_or_create_asset, get_or_create_finding
 from offensivex.services import targets as targets_service
 from offensivex.services.scope import ScopeRuleInput
+from tests.integration.auth_support import authenticated_client
 
 pytestmark = pytest.mark.integration
 
@@ -57,7 +57,7 @@ def client(db_engine) -> TestClient:
         secret_key="test-secret-key-not-used-for-anything-real",
         database_url=db_engine.url.render_as_string(hide_password=False),
     )
-    return TestClient(create_app(api_settings))
+    return authenticated_client(api_settings)
 
 
 def _assessment_with_finding(session: Session) -> tuple[models.Assessment, models.Finding]:

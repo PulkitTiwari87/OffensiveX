@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
 from offensivex.core.config import Settings
-from offensivex.main import create_app
+from offensivex.db import models
+from tests.integration.auth_support import authenticated_client
 
 pytestmark = pytest.mark.integration
 
@@ -38,22 +39,25 @@ def client(settings: Settings):
         pytest.skip(f"PostgreSQL not reachable ({exc.__class__.__name__}).")
     finally:
         engine.dispose()
-    return TestClient(create_app(settings))
+    return authenticated_client(settings, models.UserRole.ADMIN)
 
 
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
 
-def test_full_vertical_slice_through_http(client: TestClient) -> None:
+def test_full_vertical_slice_through_http(client: TestClient, settings: Settings) -> None:
+    """An analyst submits scope; a *different* user (admin, `client`) approves
+    it — ADR-013's separation of duties — then the analyst runs the assessment."""
     name = f"phase2-api-{uuid.uuid4().hex[:8]}.test"
     now = datetime.now(UTC)
+    analyst = authenticated_client(settings, models.UserRole.ANALYST)
 
-    r = client.post("/api/v1/targets", json={"name": name, "type": "web_application"})
+    r = analyst.post("/api/v1/targets", json={"name": name, "type": "web_application"})
     assert r.status_code == 201, r.text
     target = r.json()
 
-    r = client.post(
+    r = analyst.post(
         f"/api/v1/targets/{target['id']}/authorizations",
         json={
             "scope_rules": [{"rule_type": "domain", "pattern": name}],
@@ -72,7 +76,7 @@ def test_full_vertical_slice_through_http(client: TestClient) -> None:
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "approved"
 
-    r = client.post("/api/v1/assessments", json={"target_id": target["id"]})
+    r = analyst.post("/api/v1/assessments", json={"target_id": target["id"]})
     assert r.status_code == 201, r.text
     assessment = r.json()
     assert assessment["status"] == "running"

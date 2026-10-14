@@ -78,6 +78,14 @@ def _is_private_or_reserved(pattern: str) -> bool:
     )
 
 
+def is_private_or_loopback_host(host: str) -> bool:
+    """For a validated host from `offensivex.core.urls`: an IP literal in a
+    private/loopback/link-local/reserved range, or a name that is loopback by
+    definition (`localhost`, `*.localhost`). Other DNS names return False —
+    where they resolve is a runtime concern (see `_is_private_or_reserved`)."""
+    return _is_private_or_reserved(host) or host == "localhost" or host.endswith(".localhost")
+
+
 def validate_scope_rules(rules: list[ScopeRuleInput], *, allow_private_targets: bool) -> None:
     """Raise ScopeValidationError on the first rule that fails Guardrail.md
     section 2's creation-time checks. Does not mutate `rules`.
