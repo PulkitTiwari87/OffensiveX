@@ -268,6 +268,8 @@ The project's ML story is weaker at MVP. Mitigated by designing feedback capture
 ## Consequences
 `ml/` is not created until a phase needs it. This is an **open question** for the owner (is ML a required headline?).
 
+**Research note (2026-10-14) — decision unchanged.** Offline research notebooks now live in `notebooks/` (not `ml/`) to test this ADR's reasoning on real public data: severity prediction (reconstruction benchmark vs metadata-only), exploit-likelihood ranking against CISA KEV, and a contextual-risk notebook whose suitability gate refuses to train because no public dataset contains environmental labels. They do not satisfy ADR-009's criteria (no analyst-labelled data; no offline win over the deterministic engine on the deployed task), nothing is integrated, and any future integration must follow [roadmap/ml-integration-contract.md](roadmap/ml-integration-contract.md).
+
 ## Status
 PROPOSED
 

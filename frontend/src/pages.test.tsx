@@ -116,6 +116,48 @@ describe("login", () => {
   });
 });
 
+describe("navigation and system status", () => {
+  it("renders the shell with labelled navigation, breadcrumbs and the signed-in role", async () => {
+    setupFetch({ "GET /auth/me": me("analyst"), "GET /system/status": SYSTEM, "GET /overview": EMPTY_OVERVIEW });
+    mount("/");
+    const nav = await screen.findByRole("navigation", { name: "Main" });
+    for (const name of ["Overview", "Targets", "Assessments", "Findings", "System"]) {
+      expect(within(nav).getByRole("link", { name })).toBeInTheDocument();
+    }
+    expect(within(nav).getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Overview");
+    expect(screen.getByText("analyst")).toBeInTheDocument();
+  });
+
+  it("shows an honest 404 for unknown routes", async () => {
+    setupFetch({ "GET /auth/me": me("viewer") });
+    mount("/nope");
+    expect(await screen.findByRole("heading", { name: "Page not found" })).toBeInTheDocument();
+  });
+
+  it("shows system status, flags risky switches, and never shows secrets", async () => {
+    setupFetch({
+      "GET /auth/me": me("viewer"),
+      "GET /system/status": {
+        ...SYSTEM,
+        llm: { enabled: true, provider: "anthropic", model: "claude-test" },
+        allow_self_approval: true,
+      },
+    });
+    mount("/system");
+    expect(await screen.findByText("claude-test")).toBeInTheDocument();
+    expect(screen.getByText(/Self-approval is on/)).toBeInTheDocument();
+    expect(screen.getByText("480 minutes")).toBeInTheDocument();
+  });
+
+  it("shows an unavailable state, with retry, when the API is unreachable", async () => {
+    setupFetch({ "GET /auth/me": me("viewer"), "GET /system/status": json(500, { detail: "boom" }) });
+    mount("/system");
+    expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+});
+
 describe("role-based controls (display only; the server stays authoritative)", () => {
   const targets = [
     { id: "t1", name: "lab", type: "web", entry_point: "http://localhost:8080/", default_exposure: "medium", default_criticality: "medium" },
@@ -191,7 +233,11 @@ describe("authorizations", () => {
     const scope = (await screen.findAllByRole("table"))[0];
     expect(within(scope).getByText("8080")).toBeInTheDocument();
     expect(within(scope).getByText("all ports")).toBeInTheDocument(); // exclusion without ports
-    await userEvent.setup().click(screen.getByRole("button", { name: "Approve" }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    // Approving grants scan authority, so it asks first and nothing is sent until confirmed.
+    expect(calls.some((c) => c.key.endsWith("/approve"))).toBe(false);
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Approve scope" }));
     await waitFor(() => expect(calls.some((c) => c.key.endsWith("/approve"))).toBe(true));
     const approve = calls.find((c) => c.key.endsWith("/approve"))!;
     expect((approve.init.headers as Record<string, string>)["X-CSRF-Token"]).toBe("csrf-1");
@@ -243,7 +289,10 @@ describe("assessments", () => {
   it("offers Start run for an unstarted assessment and posts it with CSRF", async () => {
     const calls = setupFetch({ ...base(unstarted), "POST /assessments/a1/run": assessment({ status: "running" }) });
     mount("/assessments/a1");
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Start run" }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Start run" }));
+    expect(calls.some((c) => c.key === "POST /assessments/a1/run")).toBe(false); // guarded by a dialog
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start run" }));
     await waitFor(() => expect(calls.some((c) => c.key === "POST /assessments/a1/run")).toBe(true));
     const run = calls.find((c) => c.key === "POST /assessments/a1/run")!;
     expect((run.init.headers as Record<string, string>)["X-CSRF-Token"]).toBe("csrf-1");
@@ -255,8 +304,34 @@ describe("assessments", () => {
       "POST /assessments/a1/run": json(503, { detail: "No LLM is configured, so agents cannot run." }),
     });
     mount("/assessments/a1");
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Start run" }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Start run" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start run" }));
     expect(await screen.findByText("No LLM is configured, so agents cannot run.")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(); // dialog closes so the error is visible
+  });
+
+  it("lets the user back out of a dialog with Escape without sending anything", async () => {
+    const calls = setupFetch({ ...base(unstarted), "POST /assessments/a1/cancel": assessment({ status: "cancelled" }) });
+    mount("/assessments/a1");
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("dialog", { name: "Cancel this assessment?" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(calls.some((c) => c.key.endsWith("/cancel"))).toBe(false);
+  });
+
+  it("shows progress, status with text, and switches result tabs", async () => {
+    setupFetch(base(assessment({})));
+    mount("/assessments/a1");
+    expect(await screen.findByRole("progressbar", { name: "Agent runs succeeded" })).toHaveAttribute("aria-valuenow", "0");
+    expect(screen.getAllByText("failed").length).toBeGreaterThan(0); // status is text, not only colour
+    const user = userEvent.setup();
+    expect(await screen.findByRole("tabpanel", { name: /Findings/ })).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: /Attack paths/ }));
+    expect(screen.getByRole("tabpanel", { name: /Attack paths/ })).toBeVisible();
+    expect(document.getElementById("panel-findings")).toHaveAttribute("hidden");
   });
 
   it("gives a viewer no way to start or cancel", async () => {
@@ -290,6 +365,31 @@ describe("findings", () => {
     expect(titles()).toEqual(["Critical one", "Medium one", "Low one"]);
     await user.click(screen.getByRole("button", { name: /Risk/ })); // toggle to ascending
     expect(titles()).toEqual(["Low one", "Medium one", "Critical one"]);
+  });
+
+  it("filters the loaded findings with search and reports the count", async () => {
+    setupFetch({
+      "GET /auth/me": me("viewer"),
+      "GET /findings": [
+        finding({ id: "f1", title: "Missing security header: HSTS" }),
+        finding({ id: "f2", title: "Server banner disclosed", asset_identifier: "http://localhost:9000/" }),
+      ],
+    });
+    mount("/findings");
+    await screen.findByText("Server banner disclosed");
+    expect(screen.getByText("2 of 2 shown")).toBeInTheDocument();
+    await userEvent.setup().type(screen.getByRole("searchbox", { name: "Search findings" }), "hsts");
+    expect(screen.queryByText("Server banner disclosed")).not.toBeInTheDocument();
+    expect(screen.getByText("Missing security header: HSTS")).toBeInTheDocument();
+    expect(screen.getByText("1 of 2 shown")).toBeInTheDocument();
+  });
+
+  it("passes the severity filter to the server", async () => {
+    const calls = setupFetch({ "GET /auth/me": me("viewer"), "GET /findings": [], "GET /findings?severity=high": [] });
+    mount("/findings");
+    await screen.findByText(/No findings yet/);
+    await userEvent.setup().selectOptions(screen.getByLabelText("Severity"), "high");
+    await waitFor(() => expect(calls.some((c) => c.key === "GET /findings?severity=high")).toBe(true));
   });
 
   it("says plainly when there are no findings", async () => {

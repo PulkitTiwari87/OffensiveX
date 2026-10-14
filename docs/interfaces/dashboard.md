@@ -1,6 +1,6 @@
 # Dashboard
 
-Status: **IMPLEMENTED** (P15) — `frontend/` (React + TypeScript strict + Vite, per ADR-001; React Router; plain CSS).
+Status: **IMPLEMENTED** (P15) — `frontend/` (React + TypeScript strict + Vite, per ADR-001; React Router; plain CSS). UI redesigned onto a token-based design system (sidebar shell, shared components in `src/ui.tsx`, tokens in `src/styles.css`); no new dependencies.
 Related: [api.md](api.md) · [cli.md](cli.md) · [../security/access-control.md](../security/access-control.md)
 
 ## Run it
@@ -22,7 +22,10 @@ The backend serves `frontend/dist` at `/dashboard` (override with `OFFENSIVEX_DA
 | Assessments / detail | status, agent runs with failure reasons, start/cancel, live refresh while running, findings, assets, attack paths, reports | `/assessments*` |
 | Findings / detail | filter by status/severity/assessment, sortable; evidence (as inert text), risk score and breakdown, analyst override | `/findings*` |
 | Report | Markdown / JSON as text, download | `/reports/{id}` |
-| Audit | audit log (admin only; others get the server's 403 message) | `/audit-log` |
+| Audit | audit log with client-side search over the loaded entries and the server `action` filter (admin only; others get the server's 403 message) | `/audit-log` |
+| System | environment, LLM provider/model (never keys or URLs), private-target and self-approval switches with warnings, session lifetime | `GET /system/status` |
+
+Shell and interaction rules: left sidebar (drawer below 900 px), breadcrumbs, skip link; dark workspace with a light theme that follows the OS setting; severity and status are always icon + text, never colour alone; wide tables become labelled rows below 720 px; `prefers-reduced-motion`, `prefers-reduced-transparency` and `prefers-contrast` are honoured. Consequential actions (approve/reject scope, start/cancel assessment, finding override) ask for confirmation in a focus-trapped dialog and show a toast on success; server refusals stay visible inline. Search boxes filter the data already loaded; status/severity filters are sent to the server.
 
 Every view is persisted state: empty states say so (e.g. "No attack paths were derived. This does not mean the target is safe"), nothing is sample data.
 
@@ -40,5 +43,7 @@ Every view is persisted state: empty states say so (e.g. "No attack paths were d
 - Driven in a browser against a real backend and PostgreSQL: sign-in, overview, target detail with port-level scope, creating an assessment and pressing **Start run** (real Gemini pipeline, live progress, 3 findings), assessment detail with a recorded provider failure, results consistent with the CLI.
 
 ## Not built / limits
+
+Redesign verification (honest scope): after the redesign, `npm run typecheck`, `npm test` (29 tests, incl. confirm dialogs, search, tabs, system page, shell navigation) and `npm run build` pass, and the production build was inspected in the browser pane at desktop and phone widths against a **local mock API with synthetic data** (layout, drawer, stacked tables, dialog, no horizontal overflow). It has **not** yet been re-driven against the real backend after the redesign. No ESLint is configured in this project. The Targets list has no per-target scope/authorization status because `GET /targets` does not return one (would need a backend field), and there is no global Reports list because reports are only listed per assessment. The Stitch MCP produced one screen (Overview) and a design system; later screens timed out, so the remaining layouts follow that shell.
 
 No charts or graph canvas (attack paths are a table of hops and evidence level, not a drawn graph); no user-management page; no SSE (polling every 3 s); no browser E2E suite (component tests with a stubbed `fetch`, plus the manual browser run above); accessibility checked by role/label queries in tests only, not with an audit tool.

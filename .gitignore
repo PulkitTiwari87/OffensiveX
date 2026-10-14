@@ -39,4 +39,10 @@ Thumbs.db
 # OffensiveX runtime data (never commit real scan/assessment artifacts or raw tool output)
 artifacts/
 *.sqlite3
+
+# ML research notebooks: never commit trained models, datasets or caches (see notebooks/README.md)
+.ipynb_checkpoints/
+notebooks/**/*.joblib
+notebooks/**/*.parquet
+notebooks/**/data_cache/
 labs/**/data/

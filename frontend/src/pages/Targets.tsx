@@ -2,7 +2,22 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, type Authorization, type Impact, type ScopeRule } from "../api";
 import { capabilities, useAuth } from "../auth";
-import { Async, Badge, ErrorBox, Notice, Section, fmtDate, useAction, useAsync } from "../ui";
+import {
+  Async,
+  Badge,
+  ConfirmDialog,
+  EmptyState,
+  ErrorBox,
+  Icon,
+  Notice,
+  PageHeader,
+  Panel,
+  SearchInput,
+  fmtDate,
+  useAction,
+  useAsync,
+  useToast,
+} from "../ui";
 
 const LEVELS: Impact[] = ["low", "medium", "high", "critical"];
 
@@ -39,12 +54,14 @@ function CreateTargetForm({ onCreated }: { onCreated: (id: string) => void }) {
         <input value={type} onChange={(e) => setType(e.target.value)} required />
       </label>
       <label>
-        Entry point (http/https URL, optional)
+        Entry point
         <input
           value={entry}
           onChange={(e) => setEntry(e.target.value)}
           placeholder="http://localhost:8080/"
+          inputMode="url"
         />
+        <span className="field-hint">Optional http/https URL. It must fall inside the scope you submit later.</span>
       </label>
       <label>
         Exposure
@@ -63,9 +80,11 @@ function CreateTargetForm({ onCreated }: { onCreated: (id: string) => void }) {
         </select>
       </label>
       {action.error && <ErrorBox message={action.error} />}
-      <button type="submit" disabled={action.busy}>
-        Create target
-      </button>
+      <div>
+        <button type="submit" disabled={action.busy}>
+          {action.busy ? "Creating…" : "Create target"}
+        </button>
+      </div>
     </form>
   );
 }
@@ -75,49 +94,92 @@ export function TargetsPage() {
   const can = capabilities(user?.role);
   const targets = useAsync(api.targets, []);
   const navigate = useNavigate();
+  const toast = useToast();
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const visible = (targets.data ?? []).filter(
+    (t) => !needle || [t.name, t.type, t.entry_point ?? ""].some((s) => s.toLowerCase().includes(needle)),
+  );
 
   return (
     <>
-      <h1>Targets</h1>
-      <Section title="All targets">
-        <Async state={targets} empty={(t) => t.length === 0}>
-          {(list) => (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Type</th>
-                    <th>Entry point</th>
-                    <th>Exposure</th>
-                    <th>Criticality</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {list.map((t) => (
-                    <tr key={t.id}>
-                      <td>
-                        <Link to={`/targets/${t.id}`}>{t.name}</Link>
-                      </td>
-                      <td>{t.type}</td>
-                      <td>{t.entry_point ?? "—"}</td>
-                      <td>{t.default_exposure}</td>
-                      <td>{t.default_criticality}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+      <PageHeader title="Targets" sub="Systems you are authorized to assess. Nothing runs without an approved scope." />
+      <div className="cols-2-1">
+        <div>
+          <div className="toolbar">
+            <SearchInput value={query} onChange={setQuery} label="Search targets" placeholder="Search name, type, entry point" />
+            {targets.data && (
+              <span className="result-count" aria-live="polite">
+                {visible.length} of {targets.data.length} shown
+              </span>
+            )}
+          </div>
+          <Panel flush>
+            <Async
+              state={targets}
+              empty={(t) => t.length === 0}
+              emptyContent={
+                <EmptyState title="No targets yet.">
+                  {can.write ? "Create one with the form to get started." : "An analyst or administrator can add targets."}
+                </EmptyState>
+              }
+            >
+              {() =>
+                visible.length === 0 ? (
+                  <EmptyState title="No targets match your search." />
+                ) : (
+                  <div className="table-wrap">
+                    <table className="stack">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Type</th>
+                          <th>Entry point</th>
+                          <th>Exposure</th>
+                          <th>Criticality</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visible.map((t) => (
+                          <tr key={t.id}>
+                            <td className="title-cell" data-label="Name">
+                              <Link to={`/targets/${t.id}`}>{t.name}</Link>
+                            </td>
+                            <td data-label="Type">{t.type}</td>
+                            <td className="mono" data-label="Entry point">
+                              {t.entry_point ?? "—"}
+                            </td>
+                            <td data-label="Exposure">
+                              <Badge value={t.default_exposure} />
+                            </td>
+                            <td data-label="Criticality">
+                              <Badge value={t.default_criticality} />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              }
+            </Async>
+          </Panel>
+        </div>
+        <div>
+          {can.write ? (
+            <Panel title="Create target">
+              <CreateTargetForm
+                onCreated={(id) => {
+                  toast("ok", "Target created. Submit its scope for approval next.");
+                  navigate(`/targets/${id}`);
+                }}
+              />
+            </Panel>
+          ) : (
+            <Notice kind="info">Your role is read-only; creating targets needs the analyst or admin role.</Notice>
           )}
-        </Async>
-      </Section>
-      {can.write ? (
-        <Section title="Create target">
-          <CreateTargetForm onCreated={(id) => navigate(`/targets/${id}`)} />
-        </Section>
-      ) : (
-        <Notice kind="info">Your role is read-only; creating targets needs the analyst or admin role.</Notice>
-      )}
+        </div>
+      </div>
     </>
   );
 }
@@ -127,10 +189,24 @@ function describePorts(rule: ScopeRule): string {
   return rule.is_exclusion ? "all ports" : "80, 443 (default)";
 }
 
+function ScopeEffect({ exclude }: { exclude: boolean }) {
+  return exclude ? (
+    <span className="badge tone-critical">
+      <Icon name="minus" size={12} />
+      exclude
+    </span>
+  ) : (
+    <span className="badge tone-ok">
+      <Icon name="check" size={12} />
+      include
+    </span>
+  );
+}
+
 function ScopeTable({ rules }: { rules: ScopeRule[] }) {
   return (
     <div className="table-wrap">
-      <table>
+      <table className="stack">
         <thead>
           <tr>
             <th>Effect</th>
@@ -142,10 +218,16 @@ function ScopeTable({ rules }: { rules: ScopeRule[] }) {
         <tbody>
           {rules.map((r, i) => (
             <tr key={i}>
-              <td>{r.is_exclusion ? "exclude" : "include"}</td>
-              <td>{r.rule_type}</td>
-              <td>{r.pattern}</td>
-              <td>{describePorts(r)}</td>
+              <td data-label="Effect">
+                <ScopeEffect exclude={r.is_exclusion} />
+              </td>
+              <td data-label="Type">{r.rule_type}</td>
+              <td className="mono" data-label="Host / network">
+                {r.pattern}
+              </td>
+              <td className="mono" data-label="Ports">
+                {describePorts(r)}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -164,33 +246,76 @@ function AuthorizationCard({
   onDecided: () => void;
 }) {
   const action = useAction();
+  const toast = useToast();
+  const [pending, setPending] = useState<"approve" | "reject" | null>(null);
+
   async function decide(decision: "approve" | "reject") {
     const done = await action.run(() => api.decideAuthorization(auth.target_id, auth.version, decision));
-    if (done) onDecided();
+    setPending(null);
+    if (done) {
+      toast("ok", `Scope version ${auth.version} ${decision === "approve" ? "approved" : "rejected"}.`);
+      onDecided();
+    }
   }
+
   return (
-    <div className="subcard">
-      <p>
-        <strong>Version {auth.version}</strong> <Badge value={auth.status} /> · valid{" "}
-        {fmtDate(auth.valid_from)} → {fmtDate(auth.valid_until)}
-      </p>
-      {auth.attestation && <p className="muted">Attestation: {auth.attestation}</p>}
-      <ScopeTable rules={auth.scope_rules} />
-      {auth.status === "pending" && canDecide && (
+    <Panel nested flush>
+      <div className="panel-head">
         <div className="row">
-          <button disabled={action.busy} onClick={() => decide("approve")}>
-            Approve
-          </button>
-          <button className="secondary" disabled={action.busy} onClick={() => decide("reject")}>
-            Reject
-          </button>
+          <strong>Version {auth.version}</strong>
+          <Badge value={auth.status} />
+        </div>
+        <span className="muted small">
+          valid {fmtDate(auth.valid_from)} → {fmtDate(auth.valid_until)}
+        </span>
+      </div>
+      {auth.attestation && (
+        <div className="panel-body">
+          <span className="faint small">Attestation</span>
+          <p className="muted" style={{ margin: 0 }}>
+            {auth.attestation}
+          </p>
         </div>
       )}
-      {auth.status === "pending" && !canDecide && (
-        <p className="muted small">Waiting for an administrator to approve this scope.</p>
+      <ScopeTable rules={auth.scope_rules} />
+      {auth.status === "pending" && (
+        <div className="panel-body">
+          {canDecide ? (
+            <div className="row">
+              <button disabled={action.busy} onClick={() => setPending("approve")}>
+                Approve
+              </button>
+              <button className="danger" disabled={action.busy} onClick={() => setPending("reject")}>
+                Reject
+              </button>
+            </div>
+          ) : (
+            <p className="muted small" style={{ margin: 0 }}>
+              Waiting for an administrator to approve this scope.
+            </p>
+          )}
+        </div>
       )}
-      {action.error && <ErrorBox message={action.error} />}
-    </div>
+      {action.error && (
+        <div className="panel-body">
+          <ErrorBox message={action.error} />
+        </div>
+      )}
+      {pending && (
+        <ConfirmDialog
+          title={pending === "approve" ? `Approve scope version ${auth.version}?` : `Reject scope version ${auth.version}?`}
+          confirmLabel={pending === "approve" ? "Approve scope" : "Reject scope"}
+          danger={pending === "reject"}
+          busy={action.busy}
+          onConfirm={() => void decide(pending)}
+          onCancel={() => setPending(null)}
+        >
+          {pending === "approve"
+            ? "Approving authorizes assessments against exactly the included hosts and ports above, for the validity window shown. The decision is recorded in the audit log."
+            : "This scope will not be usable for assessments. The decision is recorded in the audit log."}
+        </ConfirmDialog>
+      )}
+    </Panel>
   );
 }
 
@@ -202,12 +327,11 @@ interface RuleRow {
 }
 
 function SubmitAuthorizationForm({ targetId, onSubmitted }: { targetId: string; onSubmitted: () => void }) {
-  const [rows, setRows] = useState<RuleRow[]>([
-    { rule_type: "domain", pattern: "", ports: "", is_exclusion: false },
-  ]);
+  const [rows, setRows] = useState<RuleRow[]>([{ rule_type: "domain", pattern: "", ports: "", is_exclusion: false }]);
   const [attestation, setAttestation] = useState("");
   const [days, setDays] = useState(7);
   const action = useAction();
+  const toast = useToast();
 
   const update = (i: number, patch: Partial<RuleRow>) =>
     setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
@@ -229,7 +353,10 @@ function SubmitAuthorizationForm({ targetId, onSubmitted }: { targetId: string; 
         valid_until: until.toISOString(),
       }),
     );
-    if (done) onSubmitted();
+    if (done) {
+      toast("ok", "Scope submitted for approval.");
+      onSubmitted();
+    }
   }
 
   return (
@@ -272,13 +399,15 @@ function SubmitAuthorizationForm({ targetId, onSubmitted }: { targetId: string; 
           )}
         </div>
       ))}
-      <button
-        type="button"
-        className="secondary"
-        onClick={() => setRows([...rows, { rule_type: "domain", pattern: "", ports: "", is_exclusion: false }])}
-      >
-        Add rule
-      </button>
+      <div>
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => setRows([...rows, { rule_type: "domain", pattern: "", ports: "", is_exclusion: false }])}
+        >
+          Add rule
+        </button>
+      </div>
       <label>
         Attestation (you are authorized to assess this target)
         <textarea value={attestation} onChange={(e) => setAttestation(e.target.value)} required />
@@ -288,9 +417,11 @@ function SubmitAuthorizationForm({ targetId, onSubmitted }: { targetId: string; 
         <input type="number" min={1} max={365} value={days} onChange={(e) => setDays(Number(e.target.value))} />
       </label>
       {action.error && <ErrorBox message={action.error} />}
-      <button type="submit" disabled={action.busy}>
-        Submit for approval
-      </button>
+      <div>
+        <button type="submit" disabled={action.busy}>
+          {action.busy ? "Submitting…" : "Submit for approval"}
+        </button>
+      </div>
     </form>
   );
 }
@@ -300,20 +431,22 @@ function NewAssessment({ targetId, hasApproved }: { targetId: string; hasApprove
   const [validate, setValidate] = useState(false);
   const action = useAction();
   const navigate = useNavigate();
+  const toast = useToast();
 
   async function create() {
     const created = await action.run(() =>
       api.createAssessment({ target_id: targetId, scan_mode: mode, validation_enabled: validate }),
     );
-    if (created) navigate(`/assessments/${created.id}`);
+    if (created) {
+      toast("ok", "Assessment created. Review it, then start the run.");
+      navigate(`/assessments/${created.id}`);
+    }
   }
 
   return (
     <div className="form">
       {!hasApproved && (
-        <Notice kind="warn">
-          No approved authorization is on record, so the server will refuse a new assessment.
-        </Notice>
+        <Notice kind="warn">No approved authorization is on record, so the server will refuse a new assessment.</Notice>
       )}
       <label>
         Scan mode
@@ -328,9 +461,11 @@ function NewAssessment({ targetId, hasApproved }: { targetId: string; hasApprove
         Enable the Validation Agent (runs additional non-destructive checks)
       </label>
       {action.error && <ErrorBox message={action.error} />}
-      <button onClick={create} disabled={action.busy}>
-        Create assessment
-      </button>
+      <div>
+        <button onClick={create} disabled={action.busy}>
+          {action.busy ? "Creating…" : "Create assessment"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -345,67 +480,108 @@ export function TargetDetailPage() {
 
   return (
     <>
-      <p>
-        <Link to="/targets">← Targets</Link>
-      </p>
       <Async state={target}>
         {(t) => (
-          <>
-            <h1>{t.name}</h1>
-            <Section title="Details">
-              <dl className="facts">
-                <dt>Type</dt>
-                <dd>{t.type}</dd>
-                <dt>Entry point</dt>
-                <dd>{t.entry_point ?? "none set"}</dd>
-                <dt>Exposure / criticality</dt>
-                <dd>
-                  {t.default_exposure} / {t.default_criticality}
-                </dd>
-              </dl>
-            </Section>
-          </>
+          <PageHeader title={t.name} sub={<span className="mono">{t.entry_point ?? "No entry point set"}</span>} />
         )}
       </Async>
-      <Section title="Authorizations and scope">
-        <Async state={auths} empty={(a) => a.length === 0}>
-          {(list) =>
-            list.map((a) => (
-              <AuthorizationCard key={a.id} auth={a} canDecide={can.decide} onDecided={auths.reload} />
-            ))
-          }
-        </Async>
-        {auths.data?.length === 0 && (
-          <p className="muted">No scope has been submitted. Nothing can be assessed until an administrator approves one.</p>
-        )}
-      </Section>
-      {can.write && (
-        <>
-          <Section title="Submit a new authorization">
-            <SubmitAuthorizationForm targetId={id} onSubmitted={auths.reload} />
-          </Section>
-          <Section title="Create assessment">
-            <NewAssessment
-              targetId={id}
-              hasApproved={(auths.data ?? []).some((a) => a.status === "approved")}
-            />
-          </Section>
-        </>
-      )}
-      <Section title="Assessments of this target">
-        <Async state={assessments} empty={(a) => a.length === 0}>
+      <div className="cols-2-1">
+        <div>
+          <Panel title="Authorizations and scope">
+            <Async
+              state={auths}
+              empty={(a) => a.length === 0}
+              emptyContent={
+                <Notice kind="warn">
+                  No scope has been submitted. Nothing can be assessed until an administrator approves one.
+                </Notice>
+              }
+            >
+              {(list) => (
+                <>
+                  {!list.some((a) => a.status === "approved") && (
+                    <Notice kind="warn">No approved scope is active, so assessments are blocked for this target.</Notice>
+                  )}
+                  {list.map((a) => (
+                    <AuthorizationCard key={a.id} auth={a} canDecide={can.decide} onDecided={auths.reload} />
+                  ))}
+                </>
+              )}
+            </Async>
+          </Panel>
+          {can.write && (
+            <Panel title="Submit a new authorization">
+              <SubmitAuthorizationForm targetId={id} onSubmitted={auths.reload} />
+            </Panel>
+          )}
+        </div>
+        <div>
+          <Async state={target}>
+            {(t) => (
+              <Panel title="Details">
+                <dl className="facts">
+                  <dt>Type</dt>
+                  <dd>{t.type}</dd>
+                  <dt>Exposure</dt>
+                  <dd>
+                    <Badge value={t.default_exposure} />
+                  </dd>
+                  <dt>Criticality</dt>
+                  <dd>
+                    <Badge value={t.default_criticality} />
+                  </dd>
+                </dl>
+              </Panel>
+            )}
+          </Async>
+          {can.write && (
+            <Panel title="Create assessment">
+              <NewAssessment targetId={id} hasApproved={(auths.data ?? []).some((a) => a.status === "approved")} />
+            </Panel>
+          )}
+        </div>
+      </div>
+      <Panel title="Assessments of this target" flush>
+        <Async
+          state={assessments}
+          empty={(a) => a.length === 0}
+          emptyContent={<EmptyState title="No assessments of this target yet." />}
+        >
           {(list) => (
-            <ul>
-              {list.map((a) => (
-                <li key={a.id}>
-                  <Link to={`/assessments/${a.id}`}>{fmtDate(a.started_at)}</Link> <Badge value={a.status} /> ·{" "}
-                  {a.finding_count} findings
-                </li>
-              ))}
-            </ul>
+            <div className="table-wrap">
+              <table className="stack">
+                <thead>
+                  <tr>
+                    <th>Started</th>
+                    <th>Status</th>
+                    <th>Mode</th>
+                    <th className="num">Findings</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {list.map((a) => (
+                    <tr key={a.id}>
+                      <td className="title-cell" data-label="Started">
+                        <Link to={`/assessments/${a.id}`}>{a.started_at ? fmtDate(a.started_at) : "Not started"}</Link>
+                      </td>
+                      <td data-label="Status">
+                        <Badge value={a.status} />
+                      </td>
+                      <td data-label="Mode">
+                        {a.scan_mode}
+                        {a.validation_enabled ? " + validation" : ""}
+                      </td>
+                      <td className="num" data-label="Findings">
+                        {a.finding_count}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Async>
-      </Section>
+      </Panel>
     </>
   );
 }

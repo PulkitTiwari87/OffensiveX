@@ -20,7 +20,7 @@ The project's **first** documentation pass (same day, earlier in this session) s
 
 ## Directory conventions
 
-`docs/` root: `README.md` (navigation), `Guardrail.md` (binding safety rules — read first), `Decision.md` (ADR log), `Memory.md` (this file), plus the five superseded stubs above. Everything else lives under one of: `architecture/`, `agents/`, `security/`, `data/`, `tools/`, `interfaces/`, `reporting/`, `deployment/`, `roadmap/`.
+`docs/` root: `README.md` (navigation), `Guardrail.md` (binding safety rules — read first), `Decision.md` (ADR log), `Memory.md` (this file), plus the five superseded stubs above. Everything else lives under one of: `architecture/`, `agents/`, `security/`, `data/`, `tools/`, `interfaces/`, `reporting/`, `deployment/`, `roadmap/`. Outside `docs/`: `notebooks/` holds three EXPERIMENTAL ML research notebooks (severity, exploit likelihood, contextual risk) with their own `README.md`; they are not part of the application, and their outputs go to the git-ignored `artifacts/ml-research/`.
 
 ## Status vocabulary
 
