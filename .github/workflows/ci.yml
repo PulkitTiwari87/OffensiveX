@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: offensivex
+          POSTGRES_PASSWORD: offensivex
+          POSTGRES_DB: offensivex
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U offensivex"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type check (mypy)
+        run: mypy src
+
+      - name: Run migrations against the CI database
+        env:
+          OFFENSIVEX_DATABASE_URL: postgresql+psycopg://offensivex:offensivex@localhost:5433/offensivex
+        run: alembic upgrade head
+
+      - name: Unit + integration tests
+        env:
+          OFFENSIVEX_DATABASE_URL: postgresql+psycopg://offensivex:offensivex@localhost:5433/offensivex
+          OFFENSIVEX_TEST_DATABASE_URL: postgresql+psycopg://offensivex:offensivex@localhost:5433/offensivex
+        run: pytest --cov=src/offensivex --cov-report=term-missing

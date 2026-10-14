@@ -1,0 +1,42 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.vite/
+
+# Coverage / test artifacts
+coverage/
+
+# Logs
+logs/
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# OffensiveX runtime data (never commit real scan/assessment artifacts or raw tool output)
+artifacts/
+*.sqlite3
+labs/**/data/

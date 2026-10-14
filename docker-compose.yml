@@ -1,0 +1,41 @@
+# Local development environment for Phase 0: the API and its database.
+# No worker/sandbox/orchestrator services yet — those arrive with the
+# Tool Registry (P3) and Sandbox (P4). See docs/deployment/docker.md.
+#
+# Usage: docker compose up -d        # start postgres + api
+#        docker compose up -d postgres   # start only the database
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: offensivex
+      POSTGRES_PASSWORD: offensivex
+      POSTGRES_DB: offensivex
+    ports:
+      # Non-default host port so this doesn't collide with a Postgres
+      # instance a developer may already have running locally.
+      - "5433:5432"
+    volumes:
+      - offensivex-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U offensivex"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    environment:
+      OFFENSIVEX_DATABASE_URL: postgresql+psycopg://offensivex:offensivex@postgres:5432/offensivex
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  offensivex-postgres-data:
