@@ -700,3 +700,33 @@ New routes (see docs/interfaces/api.md), `AgentRun.error` (derived from `output_
 
 ## Status
 ACCEPTED
+
+
+---
+
+# ADR-026
+
+## Decision
+The two trained research models from the notebooks are integrated as an **optional, advisory-only ML layer** (`backend/src/offensivex/ml_advisory/`), exactly the shape [roadmap/ml-integration-contract.md](roadmap/ml-integration-contract.md) reserved under ADR-009: **severity estimator** (notebook 01; offered only for a CVE finding with no CVSS vector) and **exploit-likelihood ranker** (notebook 02; offered for a CVE finding as a calibrated KEV-within-90-days estimate). It is exposed only as `GET /findings/{id}/ml-advisory`, a separate read-only structure; it never reads or writes `Finding.severity`, `cvss_score`, `status`, `risk_score`, evidence or attack-graph state. **It is disabled by default** (`OFFENSIVEX_ML_ADVISORY_ENABLED`). An artifact is unpickled only if its SHA-256 equals the operator-pinned `OFFENSIVEX_ML_ARTIFACT_PINS` value, its scikit-learn major.minor equals the runtime's, and it was not trained in `fast_dev`; any failure (or missing optional `ml` extra, invalid input, inference error) yields "no estimate" and the pipeline continues unchanged. Notebook 03 trained no model (its suitability gate failed: no contextual labels exist), so there is no contextual-priority slot; `risk_model_v1` is untouched.
+
+## Context
+The project owner ran notebooks 01–03 at full scale on Kaggle (2026-10-14, `FAST_DEV=False`, dataset fingerprint `85bab2ed…`) and asked for the trained models to be used in the project. Results are modest: severity MAE 0.987 / R² 0.407 / macro-F1 0.519 (dummy 0.156); exploit-likelihood test PR-AUC 0.077 vs chance 0.0029, ROC-AUC 0.915, precision 0.027 at recall 0.72. ADR-009 forbids ML on the MVP critical path and the contract (§9) sets acceptance gates before any integration.
+
+## Alternatives
+- Do not integrate (contract §9 gates unmet): rejected by the owner's explicit request; mitigated instead by shipping it off by default, advisory-only and fail-closed.
+- Persist advisories on `Finding` (new columns/migration): deferred — computing on request is a pure function of stored fields, needs no schema change, and avoids stale estimates; the contract's re-scoring job becomes relevant only if advisories are stored.
+- Let the estimate fill `cvss_score`/`severity`, or feed `risk_score`: rejected — forbidden by the contract and Guardrail (risk scores only from the deterministic Risk Agent; the CVSS calculator is authoritative when a vector exists).
+- Load artifacts without a checksum pin: rejected — joblib is pickle (code execution); the pin is the control.
+- Add KEV/EPSS lookup so the exploit hint applies "only to CVEs not in KEV": deferred — needs its own ADR; until then every exploit advisory carries `known_exploited_check: "not_performed"`.
+
+## Reasoning
+An advisory layer that is inert unless an operator pins specific artifacts keeps ADR-009's "product behaves identically without a model" true while letting analysts see the estimates. Keeping the severity estimate to vector-less CVEs and labelling every output as an estimate with its meaning, version, dataset fingerprint and limitations prevents the estimates being read as scores, probabilities of compromise, or "safe".
+
+## Trade-offs
+**Contract §9 acceptance gates are not all met:** no out-of-time re-validation on CVEs after the training snapshot, no stakeholder sign-off on the exploit threshold (precision 2.7 % means ~97 of 100 flags are false positives), no independent security review of the loader. Hence EXPERIMENTAL and off by default; enabling it is the operator's explicit decision. Adds an optional `ml` extra pinned to the training versions (scikit-learn 1.6.1, numpy 2.1.3, pandas 2.3.3, scipy 1.16.3, joblib 1.6.0); artifacts live in the git-ignored `backend/models/` and must be re-pinned after every retrain. The loader keeps models in process memory after the first request. `trained_at` is the training run's dataset-load time (the notebooks record no later timestamp).
+
+## Consequences
+New `Settings` fields `ml_advisory_enabled`, `ml_models_dir`, `ml_artifact_pins`; new route (see [interfaces/api.md](interfaces/api.md)); new package `offensivex.ml_advisory` (`features.py` is a verbatim port of the notebooks' reference preprocessing, ruff E501 waived for its regex literals); tests in `tests/unit/test_ml_advisory.py` and `tests/integration/test_ml_advisory_api.py`. ADR-009 stands: nothing ML is on the critical path.
+
+## Status
+ACCEPTED (experimental; off by default)

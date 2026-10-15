@@ -75,6 +75,13 @@ Scope is now checked on **host and port**, and connecting adapters validate **ev
 - Gemini: `gemini-2.5-flash` returns 404 for chat on the owner's key although `/models` lists it; `gemini-3.1-flash-lite` works (verified 2026-10-14).
 - Dev-DB lab accounts `mvp-admin/analyst/viewer` were created for verification; their passwords live only in a session scratch file. Change or remove them.
 
+## ML advisory layer (ADR-026)
+
+- Notebooks 01–03 ran at full scale on Kaggle 2026-10-14 (CPU, `FAST_DEV=False`, one dataset: `afr1ste/nvd-cve-cvss-kev-vulnerabilities-2020-2026`, fingerprint `85bab2ed…`; runs 2,219 s / 1,554 s / <1 min). Results are modest: 01 test MAE 0.987, R² 0.407, macro-F1 0.519; 02 test PR-AUC 0.077 vs chance 0.0029, precision 2.7 % at recall 72 %; **03 trains no model** (suitability gate failed — no contextual labels exist publicly). Never quote these as production quality.
+- Raw outputs, per notebook, are in `artifacts/ml-research/{01_severity,02_exploit_likelihood,03_risk_prioritization}/` (git-ignored); the integrated models + schemas are staged in `backend/models/` (git-ignored, never commit).
+- The integration is **advisory-only, off by default, fail-closed**: `offensivex.ml_advisory`, `GET /findings/{id}/ml-advisory`, `OFFENSIVEX_ML_ADVISORY_ENABLED` + checksum pins in `OFFENSIVEX_ML_ARTIFACT_PINS` (values in `.env.example`; re-pin after any retrain). It needs `pip install -e "backend[ml]"` (scikit-learn pinned to 1.6.1, a major.minor mismatch makes the loader refuse the artifacts). Contract §9 gates (out-of-time re-validation, threshold sign-off, security review of the pickle-loading path) are **not** met — do not enable it for real assessments without them.
+- Gotcha found in testing: an API handler must pass the app's `Settings` (`Depends(get_app_settings)`) to `get_advisories`; falling back to `get_settings()` silently reads the environment instead of the app's configuration.
+
 ## Unresolved questions for the project owner
 
 - Which LLM provider/model to run first for real verification (both an Anthropic and an OpenAI-compatible provider are implemented; neither is verified).

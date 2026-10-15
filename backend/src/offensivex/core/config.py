@@ -119,6 +119,14 @@ class Settings(BaseSettings):
     # only when this is true (single-user lab setups). Default false.
     allow_self_approval: bool = False
 
+    # --- ML advisory (ADR-026; docs/roadmap/ml-integration-contract.md) ---------
+    # Off by default. Even when on, an artifact is loaded only if its SHA-256 equals
+    # the operator-pinned value below (joblib/pickle is code execution — contract
+    # section 7). `ml_models_dir` unset: <backend>/models. Pins: {filename: sha256}.
+    ml_advisory_enabled: bool = False
+    ml_models_dir: str | None = None
+    ml_artifact_pins: dict[str, str] = Field(default_factory=dict)
+
     @property
     def session_cookie_secure(self) -> bool:
         """ADR-012: cookie flags relax only for explicit development/test."""

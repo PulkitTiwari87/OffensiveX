@@ -1,6 +1,6 @@
 # ML Integration Contract (future)
 
-Status: **PLANNED** — a contract for a possible future integration. **Nothing in this document is implemented.** No model from `notebooks/` is loaded by, or shipped with, the application.
+Status: **PARTIALLY IMPLEMENTED (ADR-026, experimental, off by default).** The severity (01) and exploit-likelihood (02) slots are implemented as an advisory-only layer (`backend/src/offensivex/ml_advisory/`, `GET /findings/{id}/ml-advisory`); the contextual slot (03) does not exist. **The §9 acceptance gates are not all met** — see "Implementation status" at the end of this document. No model artifact is committed or shipped: they live in the git-ignored `backend/models/` and load only when an operator enables the feature and pins their SHA-256.
 Related: [../Decision.md](../Decision.md) ADR-009 (no ML in the MVP critical path) and ADR-019 (`risk_model_v1`) · [../security/risk-analysis.md](../security/risk-analysis.md) · [../Guardrail.md](../Guardrail.md) §3 (never fabricate; risk scores only from the deterministic Risk Agent) · research notebooks: [../../notebooks/README.md](../../notebooks/README.md)
 
 ## 1. Principles
@@ -93,3 +93,11 @@ Model missing, checksum mismatch, version-incompatible, schema-invalid input, or
 ## 10. Out of scope here
 
 Training pipelines in production, online learning, feature stores, model registries, and any use of ML to set `risk_score`, change finding status, or choose agent actions.
+
+## 11. Implementation status (ADR-026)
+
+**Implemented:** §3 input validation (forbidden columns and unknown extras rejected, text-leakage scrubbing, official CVSS v3 calculation); §4 missing-feature behaviour (`degraded_inputs`); §5 version checks (pinned checksum, `fast_dev=false`, scikit-learn major.minor, schema name/version) and version metadata on every advisory; §6 output format (separate `ml_advisory` list, `is_estimate`, `probability_meaning`, no "risk %"); §7 offline in-process load only from the operator-configured directory after SHA-256 verification; §8 fallback (any failure ⇒ no advisory, structured warning, pipeline unchanged). Tests cover each fallback and assert the pickle is never loaded when a gate fails.
+
+**Deviations from the contract text:** advisories are computed on request and **not stored**, so the "re-scoring job" in §5 does not exist yet; `artifact_sha256` is an object for the severity slot (two artifacts); `trained_at` is the training run's dataset-load time; KEV membership is unknown to the project, so the exploit advisory carries `known_exploited_check: "not_performed"` (the "only for CVEs not in KEV" rule in §2 cannot be enforced yet); both slots apply only to findings that carry a CVE id and a description, and the severity slot only when no CVSS vector exists.
+
+**§9 gates:** (1) full-scale Kaggle runs — **met** (2026-10-14, `FAST_DEV=False`); out-of-the-box reproduction from the recorded fingerprint/seeds has not been independently repeated. (2) out-of-time re-validation + drift check — **NOT met**. (3) stakeholder review of the exploit threshold and precision/recall — **NOT met** (test precision 2.7 % at recall 72 %). (4) beats the deterministic engine on the deployed task — **not applicable / cannot be shown** (no contextual labels; severity ML only approximates the calculator, MAE 0.987 vs deterministic exact). (5) security review of the loading path, dependency pinning, model card in the UI — **partial** (pinning done; no independent review; the UI does not yet surface the model card). (6) ADR and docs before code — **ADR-026 written alongside the code, not before it.** Until (2), (3) and (5) are met the layer must stay off by default.

@@ -24,10 +24,17 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from offensivex.api.deps import get_db_session, get_request_id, require_permission
+from offensivex.api.deps import (
+    get_app_settings,
+    get_db_session,
+    get_request_id,
+    require_permission,
+)
 from offensivex.auth.permissions import Permission
 from offensivex.auth.principal import Principal
+from offensivex.core.config import Settings
 from offensivex.db import models
+from offensivex.ml_advisory import service as ml_service
 from offensivex.services import audit
 from offensivex.services import findings as findings_service
 
@@ -102,6 +109,42 @@ def get_finding(
     session: Annotated[Session, Depends(get_db_session)],
 ) -> models.Finding:
     return findings_service.get_finding(session, finding_id)
+
+
+class MlAdvisoryResponse(BaseModel):
+    finding_id: UUID
+    ml_advisory: list[dict]
+    note: str
+
+
+@detail_router.get(
+    "/{finding_id}/ml-advisory", response_model=MlAdvisoryResponse, dependencies=[_read]
+)
+def get_ml_advisory(
+    finding_id: UUID,
+    session: Annotated[Session, Depends(get_db_session)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> MlAdvisoryResponse:
+    """Advisory ML estimates (ADR-026), read-only and separate from every Finding field —
+    they never change severity, cvss_score, status or risk_score. An empty list means
+    "no estimate available" (feature off, model unavailable, or not a CVE finding),
+    never "safe"."""
+    finding = findings_service.get_finding(session, finding_id)
+    advisories = ml_service.get_advisories(
+        cve=finding.cve,
+        description=finding.description,
+        cvss_vector=finding.cvss_vector,
+        cwe=finding.cwe,
+        settings=settings,
+    )
+    return MlAdvisoryResponse(
+        finding_id=finding.id,
+        ml_advisory=advisories,
+        note=(
+            "Estimates only; an empty list means no estimate is available, not that the "
+            "finding is safe. Deterministic severity, CVSS and risk_score remain authoritative."
+        ),
+    )
 
 
 class FindingStatusOverrideRequest(BaseModel):

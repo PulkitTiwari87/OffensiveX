@@ -47,6 +47,7 @@ self-escalation → **403**. Too many failed logins → **429**.
 | GET | `/api/v1/assessments/{id}/assets` | `data:read` | |
 | GET | `/api/v1/assessments/{id}/findings` | `data:read` | `?status=` filter |
 | GET | `/api/v1/findings/{id}` | `data:read` | with evidence, `risk_score`, `risk_breakdown` |
+| GET | `/api/v1/findings/{id}/ml-advisory` | `data:read` | optional ML estimates (ADR-026), separate from the finding; `ml_advisory: []` = none available (feature off, no/invalid model, non-CVE finding), never "safe" |
 | PATCH | `/api/v1/findings/{id}/status` | `findings:override` | body `{status: "confirmed"\|"rejected", reason?}`; the state machine still applies; audited with the reason |
 | GET | `/api/v1/assessments/{id}/attack-paths` | `data:read` | |
 | POST | `/api/v1/assessments/{id}/reports` | `reports:generate` | body `{formats?: ["json","markdown"]}`; immutable; 201. If the LLM is enabled the report may carry an AI summary — see `provenance.ai_summary.status` (`generated` \| `failed` \| `skipped`) |

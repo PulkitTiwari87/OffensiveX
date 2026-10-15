@@ -69,6 +69,7 @@ MATRIX: list[tuple[str, str, Permission, dict | None]] = [
     ("GET", "/api/v1/assessments/{assessment_id}/findings", Permission.DATA_READ, None),
     ("GET", "/api/v1/assessments/{assessment_id}/attack-paths", Permission.DATA_READ, None),
     ("GET", "/api/v1/findings/{finding_id}", Permission.DATA_READ, None),
+    ("GET", "/api/v1/findings/{finding_id}/ml-advisory", Permission.DATA_READ, None),
     (
         "PATCH",
         "/api/v1/findings/{finding_id}/status",

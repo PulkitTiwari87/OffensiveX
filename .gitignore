@@ -45,4 +45,6 @@ artifacts/
 notebooks/**/*.joblib
 notebooks/**/*.parquet
 notebooks/**/data_cache/
+# Trained advisory models staged for the backend (ADR-026): checksum-pinned in config, never committed
+backend/models/
 labs/**/data/

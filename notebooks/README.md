@@ -82,6 +82,8 @@ Use [`EXPERIMENT_SUMMARY_TEMPLATE.md`](EXPERIMENT_SUMMARY_TEMPLATE.md) to record
 
 **Measured by the author** (Windows laptop, CPU only, Kaggle parquet): notebook 03 end-to-end through a Jupyter kernel on the **full** data: **≈ 1 minute**. Notebooks 01 and 02 were executed **only in `FAST_DEV` mode** (01: 40 k-row subsample ≈ 8 min as a script; 02: all positives + 40 k negatives ≈ 3 min) — **full-data runs of 01 and 02 have not been executed by the author.** Expect them to take noticeably longer than the FAST_DEV figures (01 trains ~190 k rows with TF-IDF/SVD, random forests, repeated splits and bootstrap CIs — likely tens of minutes; 02 is smaller). Memory: a few GB for 01/02; set `FAST_DEV=True` to debug quickly (results from such runs are flagged and must not be reported).
 
+**Kaggle full-data runs (2026-10-14, CPU, `FAST_DEV=False`):** 01 ran in 2,219 s (44 files exported), 02 in 1,554 s (38 files), 03 in under a minute (21 files, no model). Outputs were downloaded to `artifacts/ml-research/<NN_name>/`; the integrated models are described in [`../docs/roadmap/ml-integration-contract.md`](../docs/roadmap/ml-integration-contract.md) §11.
+
 ## Common errors
 
 | Symptom | Cause / fix |
